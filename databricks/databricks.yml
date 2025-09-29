@@ -1,0 +1,60 @@
+bundle:
+  name: nyc_311_pipeline
+
+# resources klasöründeki tüm .yml dosyalarını dahil et
+include:
+  - resources/*.yml
+variables:
+  # Catalog ayarları
+  catalog:
+    default: nyc_311
+  
+  # S3 bucket ayarları
+  bronze_bucket:
+    default: s3://nyc-311-bronze  # Ortak bronze bucket
+  
+  data_bucket:
+    default: s3://nyc-311-bronze  # Bu target'ta override edilecek
+  
+  # Unity Catalog Volume paths
+  bronze_volume_path:
+    default: /Volumes/${var.catalog}/bronze/external_data
+  silver_volume_path:
+    default: /Volumes/${var.catalog}/silver/external_data
+  gold_volume_path:
+    default: /Volumes/${var.catalog}/gold/external_data
+  
+  # Checkpoint paths
+  bronze_checkpoint_path:
+    default: /Volumes/${var.catalog}/bronze/checkpoints
+  silver_checkpoint_path:
+    default: /Volumes/${var.catalog}/silver/checkpoints
+  gold_checkpoint_path:
+    default: /Volumes/${var.catalog}/gold/checkpoints
+  
+  # Pipeline storage
+  pipeline_storage_path:
+    default: /Volumes/${var.catalog}/_bundle_storage/pipelines
+
+# Ortamlar (Development ve Production)
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://dbc-0d4418ed-daed.cloud.databricks.com
+      profile: marvelous
+    
+    variables:
+      catalog: nyc_311_dev
+      data_bucket: s3://nyc-311-data-dev  # Dev için özel bucket
+  prod:
+    mode: production
+    workspace:
+      host: https://dbc-0d4418ed-daed.cloud.databricks.com
+      profile: marvelous
+    
+    variables:
+      catalog: nyc_311_prod
+      data_bucket: s3://nyc-311-data-prod  # Prod için özel bucket
+    

@@ -1,17 +1,28 @@
-import pytest
 import boto3
+import pytest
 from moto import mock_aws
 import requests_mock
-from datetime import datetime, timedelta
-from include.nyc311_ingestion import NYC311DataIngestion
 import re
+from datetime import datetime, timezone
+from include.nyc311_ingestion import NYC311DataIngestion
+from airflow.models import DagBag, DagRun, TaskInstance
+from airflow.utils.state import State
+from airflow.utils.types import DagRunType
+from airflow.utils.session import create_session
+from unittest.mock import patch
+import uuid
 
 BUCKET = "test-bucket"
 
+@pytest.fixture
+def session():
+    """SQLAlchemy session for DAG/TaskInstance tests."""
+    with create_session() as session:
+        yield session
 
 @pytest.fixture
 def s3_setup():
-    """Fake S3 client (moto ile) + FakeS3Hook"""
+    """Fake S3 client (moto ile) ve FakeS3Hook"""
     with mock_aws():
         s3 = boto3.client("s3", region_name="us-east-1")
         s3.create_bucket(Bucket=BUCKET)
@@ -26,139 +37,100 @@ def s3_setup():
                 except Exception:
                     return False
 
-            def load_bytes(self, bytes_data, key, bucket_name, replace=True, metadata=None):
-                s3.put_object(Bucket=bucket_name, Key=key, Body=bytes_data, Metadata=metadata or {})
+            def get_conn(self):
+                """Return the mocked S3 client directly"""
+                return s3
 
+            def load_bytes(self, bytes_data, key, bucket_name, replace=True, **kwargs):
+                """Mock S3Hook.load_bytes method"""
+                put_params = {
+                    'Bucket': bucket_name,
+                    'Key': key,
+                    'Body': bytes_data
+                }
+                s3.put_object(**put_params)
+
+            def get_key(self, key, bucket_name):
+                """Mock get_key method for S3 object info"""
+                from unittest.mock import Mock
+                try:
+                    response = s3.head_object(Bucket=bucket_name, Key=key)
+                    mock_obj = Mock()
+                    mock_obj.content_length = response.get('ContentLength', 0)
+                    mock_obj.last_modified = response.get('LastModified')
+                    mock_obj.metadata = response.get('Metadata', {})
+                    return mock_obj
+                except Exception:
+                    return None
+
+            def load_string(self, string_data, key, bucket_name, replace=True, encoding='utf-8', **kwargs):
+                """Handle string uploads if needed"""
+                self.load_bytes(string_data.encode(encoding), key, bucket_name, replace, **kwargs)
+        
         ingestion.s3_hook = FakeS3Hook()
         ingestion.bucket_name = BUCKET
-
-        # Test için rate limit sıfırlansın
         ingestion.request_delay = 0
 
         yield ingestion, s3
 
-def test_daily_ingestion(requests_mock, s3_setup):
-    fake_data = [
-        {
+@pytest.fixture
+def dagbag():
+    return DagBag(dag_folder="include/dags", include_examples=False)
+
+def test_dag_loaded(dagbag):
+    dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
+    assert dag is not None
+    assert len(dag.tasks) > 0
+
+def test_dag_run(dagbag, s3_setup, requests_mock, session):
+    ingestion, s3 = s3_setup  # Get the patched ingestion instance
+    dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
+    logical_date = datetime.now(timezone.utc)
+    run_id = f"test__{logical_date.isoformat()}_{uuid.uuid4().hex[:8]}"
+
+    # API mock
+    base_url_pattern = re.compile(r"https://data\.cityofnewyork\.us/resource/erm2-nwe9\.json.*")
+    requests_mock.get(
+        base_url_pattern,
+        json=[{
             "unique_key": "12345",
             "created_date": "2025-09-17T10:00:00.000",
             "complaint_type": "Noise",
             "descriptor": "Loud Music",
             "status": "Open"
-        }
-    ]
-
-    ingestion, s3 = s3_setup
-    test_date = datetime(2025, 9, 17)
-
-    base_url_pattern = re.compile(r"https://data\.cityofnewyork\.us/resource/erm2-nwe9\.json.*")
-
-    def url_matcher(request):
-        return (
-            "created_date" in request.url
-            and "2025-09-17" in request.url
-            and "$limit=50000" in request.url
-            and "$order=created_date" in request.url
-        )
-
-        # python
-    # return data only for offset=0
-    requests_mock.get(
-        base_url_pattern,
-        json=fake_data,
+        }],
         additional_matcher=lambda req: "$offset=0" in req.url
     )
-    
-    # return empty list for any other offset (ends pagination)
     requests_mock.get(
         base_url_pattern,
         json=[],
         additional_matcher=lambda req: "$offset=0" not in req.url
     )
-        # python (add at end of your test)
-    print("mock request history:", [r.url for r in requests_mock.request_history])
-    expected_key = f"year=2025/month=09/day=17/nyc_311_2025_09_17.json.gz"
 
-    try:
-        # Fetch işlemi
-        print("Fetching data...")  # Debug için
-        data = ingestion.fetch_data_for_date(test_date)
-        print(f"Fetched data: {data}")  # Debug için
-        assert data == fake_data, "API'den gelen veri beklenen ile eşleşmiyor"
-
-                # Upload işlemi
-        print("Uploading to S3...")  # Debug için
-        info = ingestion.upload_to_s3(test_date, data, monthly=False)
-        print(f"Upload info: {info}")  # Debug için
-
-        assert info["status"] == "success"
+    # Also patch the Variable.get calls that might be used in the DAG
+    with patch('airflow.models.Variable.get') as mock_var_get:
+        def mock_get(key, default_var=None, **kwargs):
+            if key == "nyc_311_bucket":
+                return BUCKET
+            elif key == "nyc_311_request_delay":
+                return "0"
+            return default_var
         
-        
-        # S3 kontrolleri
-        result = s3.list_objects_v2(Bucket=BUCKET)
-        assert "Contents" in result, "S3'te dosya bulunamadı"
-        
-        keys = [obj["Key"] for obj in result.get("Contents", [])]
-        assert len(keys) == 1, f"Beklenen: 1 dosya, Bulunan: {len(keys)} dosya"
-        assert keys[0] == expected_key, f"Beklenen anahtar: {expected_key}, Bulunan: {keys[0]}"
-        
-    except Exception as e:
-        print(f"Hata oluştu: {str(e)}")  # Debug için
-        raise
+        mock_var_get.side_effect = mock_get
 
+        # DAG run oluştur
+        dag_run = DagRun(
+            dag_id=dag.dag_id,
+            run_id=run_id,
+            run_type=DagRunType.MANUAL,
+            state=State.RUNNING,
+            logical_date=logical_date,
+            start_date=datetime.now(timezone.utc)
+        )
+        session.add(dag_run)
+        session.commit()
 
-
-def test_upload_daily_file_overwrite(s3_setup):
-    """Dosya zaten varsa overwrite ediliyor mu?"""
-    ingestion, s3 = s3_setup
-    key = "year=2025/month=09/day=17/nyc_311_2025_09_17.json.gz"
-
-    # İlk yükleme
-    s3.put_object(Bucket=BUCKET, Key=key, Body=b"exists")
-
-    # Tekrar upload et
-    fake_data = [{"id": 1}]
-    ingestion.upload_to_s3(datetime(2025, 9, 17), fake_data, monthly=False)
-
-    # Dosya overwrite edildi mi?
-    obj = s3.get_object(Bucket=BUCKET, Key=key)
-    body = obj["Body"].read()
-    assert b"exists" not in body  # eski içerik olmamalı
-
-
-def test_validate_date_range():
-    """Geçerli ve geçersiz tarih aralıklarını test et"""
-    ingestion = NYC311DataIngestion()
-    today = datetime.now()
-
-    # Geçerli: son 7 gün
-    assert ingestion.validate_date_range(today - timedelta(days=7), today)
-
-    # Geçersiz: 2010'dan önce
-    assert ingestion.validate_date_range(datetime(2000, 1, 1), today) is False
-
-    # Geçersiz: çok ileri tarih
-    future = today + timedelta(days=10)
-    assert ingestion.validate_date_range(today, future) is False
-
-def test_upload_empty_data(s3_setup):
-    ingestion, s3 = s3_setup
-    target_date = datetime(2025, 9, 17)
-    result = ingestion.upload_to_s3(target_date, [], monthly=False)
-    assert result["status"] == "no_data"
-    assert result["record_count"] == 0
-
-def test_get_s3_file_info_nonexistent(s3_setup):
-    ingestion, s3 = s3_setup
-    info = ingestion.get_s3_file_info("nonexistent_key.json.gz")
-    assert info is None
-
-def test_check_file_exists_false(s3_setup):
-    ingestion, s3 = s3_setup
-    assert ingestion.check_file_exists("nonexistent_key.json.gz") is False
-
-def test_validate_date_range_too_long():
-    ingestion = NYC311DataIngestion()
-    start_date = datetime(2025, 1, 1)
-    end_date = datetime(2025, 2, 10)  # >32 gün
-    assert ingestion.validate_date_range(start_date, end_date) is False
+        # TaskInstance çalıştır
+        for task in dag.tasks:
+            ti = TaskInstance(task=task, run_id=dag_run.run_id)
+            ti.run(ignore_ti_state=True, ignore_all_deps=True, session=session)

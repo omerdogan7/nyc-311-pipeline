@@ -101,7 +101,7 @@ class NYC311DataIngestion:
             s3_key = f"year={target_date.year}/month={target_date.month:02d}/day={target_date.day:02d}/nyc_311_{target_date.strftime('%Y_%m_%d')}.json.gz"
             context = f"daily-{target_date.date()}"
 
-        # Handle empty data case
+    # Handle empty data case
         if not data:
             logger.info(f"⚠️ [{context}] No data to upload")
             return {
@@ -113,7 +113,7 @@ class NYC311DataIngestion:
             }
 
         try:
-            # Convert to JSON and compress
+        # Convert to JSON and compress
             json_data = json.dumps(data, default=str, separators=(',', ':'))
             compressed_data = gzip.compress(json_data.encode('utf-8'))
             file_size_mb = len(compressed_data) / (1024 * 1024)
@@ -129,13 +129,15 @@ class NYC311DataIngestion:
                 'compressed_size_mb': str(round(file_size_mb, 2))
             }
 
-            # Upload to S3
-            self.s3_hook.load_bytes(
-                bytes_data=compressed_data,
-                key=s3_key,
-                bucket_name=self.bucket_name,
-                replace=True,
-                metadata=metadata
+        # Use S3Hook's boto3 client directly to support metadata
+            s3_client = self.s3_hook.get_conn()
+            s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=s3_key,
+                Body=compressed_data,
+                Metadata=metadata,
+                ContentType='application/json',
+                ContentEncoding='gzip'
             )
 
             logger.info(f"📤 [{context}] Uploaded {s3_key}: {len(data)} records, {file_size_mb:.2f} MB")
@@ -152,7 +154,6 @@ class NYC311DataIngestion:
         except Exception as e:
             logger.error(f"❌ [{context}] S3 upload failed: {e}")
             raise
-
     def get_s3_file_info(self, s3_key: str) -> Optional[Dict]:
         """Get metadata information about an S3 file (useful for monitoring)"""
         try:

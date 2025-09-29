@@ -1,0 +1,331 @@
+version: 2
+
+models:
+  - name: dim_agency
+    description: "Agency dimension table containing all NYC agencies with business categorization"
+    config:
+      tags: ['dimension', 'gold']
+    columns:
+      - name: agency_key
+        description: "Primary key - standardized agency code (e.g., NYPD, DSNY)"
+        tests:
+          - unique
+          - not_null
+      - name: agency_name
+        description: "Full formal name of the agency"
+        tests:
+          - not_null
+      - name: agency_category
+        description: "Business category grouping for reporting and analysis"
+        tests:
+          - not_null
+      - name: created_at
+        description: "Timestamp when the record was created"
+        tests:
+          - not_null
+
+  - name: dim_location
+    description: "Location dimension table containing geographic hierarchy for NYC 311 complaints"
+    config:
+      tags: ['dimension', 'gold']
+    columns:
+      - name: location_key
+        description: "Primary key - combination of borough, city, and zip code"
+        tests:
+          - unique
+          - not_null
+      - name: borough
+        description: "NYC borough name"
+        tests:
+          - not_null
+      - name: city
+        description: "City/neighborhood name within the borough"
+        tests:
+          - not_null
+      - name: zip_code
+        description: "ZIP code of the location"
+        tests:
+          - not_null
+      - name: borough_category
+        description: "Borough grouping for analysis"
+        tests:
+          - not_null
+      - name: has_zip
+        description: "Flag indicating if location has a valid ZIP code"
+        tests:
+          - not_null
+      - name: is_specified
+        description: "Flag indicating if borough is specified"
+        tests:
+          - not_null
+      - name: created_at
+        description: "Timestamp when the record was created"
+        tests:
+          - not_null
+
+  - name: dim_complaint_type
+    description: "Complaint type dimension table with categorization"
+    config:
+      tags: ['dimension', 'gold']
+    columns:
+      - name: complaint_type_key
+        description: "Primary key - SHA2 hash of complaint_type and descriptor"
+        tests:
+          - unique
+          - not_null
+      - name: complaint_type
+        description: "Type of complaint"
+        tests:
+          - not_null
+      - name: descriptor
+        description: "Detailed description of the complaint type"
+        tests:
+          - not_null
+      - name: complaint_category
+        description: "High-level category grouping"
+        tests:
+          - not_null
+      - name: created_at
+        description: "Timestamp when the record was created"
+        tests:
+          - not_null
+
+  - name: dim_date
+    description: "Date dimension table with calendar attributes for time-based analysis"
+    config:
+      tags: ['dimension', 'static', 'gold']
+    columns:
+      - name: date_key
+        description: "Primary key in YYYYMMDD format as integer"
+        tests:
+          - unique
+          - not_null
+      - name: date_actual
+        description: "Actual date value"
+        tests:
+          - not_null
+          - unique
+      - name: year
+        description: "Calendar year (2010-2030)"
+        tests:
+          - not_null
+      - name: is_weekend
+        description: "Flag indicating if the date is a weekend"
+        tests:
+          - not_null
+      - name: is_holiday
+        description: "Flag indicating if the date is a NYC holiday"
+        tests:
+          - not_null
+      - name: is_business_day
+        description: "Flag indicating if the date is a business day"
+        tests:
+          - not_null
+      - name: created_at
+        description: "Timestamp when the record was created"
+        tests:
+          - not_null
+
+  - name: fct_complaints
+    description: "Main fact table containing all 311 complaint transactions with 26 columns"
+    config:
+      tags: ['fact', 'gold', 'incremental']
+    columns:
+      - name: unique_key
+        description: "Primary key - unique complaint identifier from source"
+        tests:
+          - unique
+          - not_null
+      - name: agency_key
+        description: "Foreign key to dim_agency"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_agency')
+                field: agency_key
+      - name: location_key
+        description: "Foreign key to dim_location"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_location')
+                field: location_key
+      - name: complaint_type_key
+        description: "Foreign key to dim_complaint_type"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_complaint_type')
+                field: complaint_type_key
+      - name: created_date_key
+        description: "Foreign key to dim_date for complaint creation date"
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: closed_date_key
+        description: "Foreign key to dim_date for complaint closure date (nullable)"
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: response_time_hours
+        description: "Time between creation and closure in hours"
+      - name: response_time_days
+        description: "Time between creation and closure in days"
+      - name: response_sla_category
+        description: "SLA performance category"
+        tests:
+          - not_null
+      - name: status
+        description: "Current status"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['OPEN', 'CLOSED', 'ASSIGNED', 'STARTED', 'IN PROGRESS', 'PENDING', 'CANCEL', 'UNSPECIFIED']
+      - name: is_closed
+        description: "Flag indicating if complaint is closed"
+        tests:
+          - not_null
+      - name: has_resolution
+        description: "Flag indicating if complaint has a resolution"
+        tests:
+          - not_null
+      - name: _processed_timestamp
+        description: "Timestamp when record was processed in silver layer"
+        tests:
+          - not_null
+
+  - name: agg_daily_summary
+    description: "Daily aggregated summary of all 311 complaints with KPIs"
+    config:
+      tags: ['aggregation', 'daily', 'gold']
+    columns:
+      - name: date_key
+        description: "Primary key - date in YYYYMMDD format"
+        tests:
+          - unique
+          - not_null
+      - name: total_complaints
+        description: "Total complaints created on this date"
+        tests:
+          - not_null
+      - name: completed_count
+        description: "Number of completed/closed complaints"
+        tests:
+          - not_null
+      - name: sla_compliance_rate
+        description: "SLA compliance percentage for closed complaints"
+      - name: top_complaint_type_1
+        description: "Most common complaint type for the day"
+      - name: top_agency_1
+        description: "Agency with most complaints for the day"
+      - name: created_at
+        description: "Timestamp when record was created"
+        tests:
+          - not_null
+
+  - name: agg_monthly_summary
+    description: "Monthly aggregated summary with YoY comparisons and trends"
+    config:
+      tags: ['aggregation', 'monthly', 'gold']
+    columns:
+      - name: month_key
+        description: "Primary key - month in YYYYMM format"
+        tests:
+          - unique
+          - not_null
+      - name: year
+        description: "Year of the month"
+        tests:
+          - not_null
+      - name: month
+        description: "Month number (1-12)"
+        tests:
+          - not_null
+      - name: total_complaints
+        description: "Total complaints created in this month"
+        tests:
+          - not_null
+      - name: yoy_growth_rate
+        description: "Year-over-year growth rate percentage"
+      - name: completion_rate
+        description: "Completion rate percentage for the month"
+      - name: created_at
+        description: "Timestamp when record was created"
+        tests:
+          - not_null
+
+  - name: agg_agency_metrics
+    description: "Daily agency performance metrics with workload and efficiency indicators"
+    config:
+      tags: ['aggregation', 'daily', 'gold']
+    tests:
+      - unique:
+          column_name: "concat(date_key, '|', agency_key)"
+    columns:
+      - name: date_key
+        description: "Date key in YYYYMMDD format"
+        tests:
+          - not_null
+      - name: agency_key
+        description: "Agency identifier"
+        tests:
+          - not_null
+      - name: total_complaints
+        description: "Total complaints assigned to agency on this date"
+        tests:
+          - not_null
+      - name: sla_compliance_rate
+        description: "SLA compliance rate percentage for the agency"
+      - name: productivity_score
+        description: "Overall productivity score"
+      - name: agency_rank_by_volume
+        description: "Agency ranking by complaint volume for the day"
+      - name: created_at
+        description: "Timestamp when record was created"
+        tests:
+          - not_null
+
+  - name: agg_location_metrics
+    description: "Daily location-level metrics with hotspot detection and trend analysis"
+    config:
+      tags: ['aggregation', 'daily', 'gold']
+    tests:
+      - unique:
+          column_name: "concat(date_key, '|', location_key)"
+    columns:
+      - name: date_key
+        description: "Date key in YYYYMMDD format"
+        tests:
+          - not_null
+      - name: location_key
+        description: "Location identifier"
+        tests:
+          - not_null
+      - name: borough
+        description: "NYC borough"
+        tests:
+          - not_null
+      - name: total_complaints
+        description: "Total complaints from this location on this date"
+        tests:
+          - not_null
+      - name: is_hotspot
+        description: "Flag indicating if location is above average (hotspot)"
+        tests:
+          - not_null
+      - name: borough_rank_daily
+        description: "Ranking within borough by complaint volume"
+      - name: complaints_7day_avg
+        description: "7-day rolling average of complaints"
+      - name: created_at
+        description: "Timestamp when record was created"
+        tests:
+          - not_null

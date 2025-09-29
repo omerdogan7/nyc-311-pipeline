@@ -1,0 +1,33 @@
+resources:
+  pipelines:
+    nyc_311_pipeline:
+      name: nyc_311_pipeline_${bundle.target}
+      catalog: ${var.catalog}
+      
+      
+      serverless: true
+      
+      configuration:
+        # Bundle değişkenlerini pipeline'a pass et
+        pipeline.catalog: ${var.catalog}
+        pipeline.bronze_bucket: ${var.bronze_bucket}
+        pipeline.data_bucket: ${var.data_bucket}
+        pipelines.autoCreateManagedSchema: "true"
+        spark.databricks.unityCatalog.enabled: "true"
+
+      libraries:
+        # İlk olarak catalog setup'ı çalıştır
+        - notebook:
+            path: ./src/setup/setup_catalog.py
+        # Sonra data pipeline'ları
+        - notebook:
+            path: ./src/bronze/bronze_layer.py
+        - notebook:
+            path: ./src/silver/silver_layer.py
+      
+      continuous: false
+      development: true
+
+      permissions:
+        - level: IS_OWNER
+          user_name: omrdgn2212@gmail.com

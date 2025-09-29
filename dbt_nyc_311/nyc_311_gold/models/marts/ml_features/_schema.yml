@@ -1,0 +1,106 @@
+# NYC 311 Gold Layer Project
+name: 'nyc_311_gold'
+version: '1.0.0'
+
+# Profile configuration
+profile: 'nyc_311_gold'
+
+# File paths
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+# Clean targets
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Project variables
+vars:
+  # Lookback days for incremental loading
+  incremental_lookback_days: 3
+
+# Model configurations
+models:
+  nyc_311_gold:
+    # Global settings
+    +persist_docs:
+      relation: true
+      columns: true
+    
+    # Marts layer - Gold tables
+    marts:
+      +schema: gold  # Base gold schema
+      
+      # Core operational data
+      core:
+        +materialized: table
+        +file_format: delta
+        +tags: ["core"]
+        
+        # Dimensions - Full refresh
+        dimensions:
+          +tags: ["dimension", "gold"]
+          
+        # Fact table - Incremental
+        facts:
+          +materialized: incremental
+          +incremental_strategy: merge
+          +on_schema_change: fail
+          +tags: ["fact", "gold", "incremental"]
+          fct_complaints:
+            +unique_key: unique_key
+            
+        # Aggregations - Incremental
+        agg_daily_summary:
+          +materialized: incremental
+          +unique_key: date_key
+          +tags: ["aggregation", "daily"]
+          
+        agg_monthly_summary:
+          +materialized: incremental
+          +unique_key: month_key
+          +tags: ["aggregation", "monthly"]
+          
+        agg_agency_metrics:
+          +materialized: incremental
+          +unique_key: ['agency_key', 'date_key']
+          +tags: ["aggregation", "daily"]
+          
+        agg_location_metrics:
+          +materialized: incremental
+          +unique_key: ['location_key', 'date_key']
+          +tags: ["aggregation", "daily"]
+          
+      # Analytics insights and research
+      analytics:
+        +materialized: table
+        +file_format: delta
+        +tags: ["analytics", "research"]
+        
+        covid_impact_analysis:
+          +tags: ["covid", "analytics"]
+          
+        holiday_pattern_analysis:
+          +tags: ["holiday", "seasonal", "analytics"]
+          
+        seasonal_trends:
+          +tags: ["seasonal", "trends", "analytics"]
+    
+    # ML Features - Feature store for machine learning
+    ml_features:
+      +materialized: table
+      +file_format: delta
+      +schema: gold
+      +tags: ["ml", "features", "machine_learning"]
+      
+      volume_forecasting_features:
+        +tags: ["forecasting", "time_series", "prophet"]
+
+# Test configurations
+tests:
+  +store_failures: true
+  +severity: warn

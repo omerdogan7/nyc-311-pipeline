@@ -2,6 +2,7 @@ from airflow.decorators import dag, task
 from datetime import datetime, timedelta
 from include.nyc311_ingestion import NYC311DataIngestion
 from airflow.operators.empty import EmptyOperator
+from airflow.utils.email import send_email  # Email için import ekle
 import logging
 
 default_args = {
@@ -9,20 +10,14 @@ default_args = {
     "depends_on_past": False,
     "retries": 2,
     "retry_delay": timedelta(minutes=10),
-    "email_on_failure": False,
+    "email": ["omrdgn2212@gmail.com"],  # Email adresi ekle
+    "email_on_failure": True,
     "email_on_retry": False,
 }
 
 @dag(
     dag_id="nyc311_daily_ingestion",
-    default_args={
-        "owner": "data-engineering",
-        "depends_on_past": False,
-        "retries": 2,
-        "retry_delay": timedelta(minutes=10),
-        "email_on_failure": True,
-        "email_on_retry": False,
-    },
+    default_args=default_args,
     description="Daily NYC 311 data ingestion (current year)",
     schedule="0 9 * * *",  # 9 AM UTC (4 AM EST, 5 AM EDT)
     start_date=datetime(2025, 9, 1),
@@ -137,20 +132,72 @@ def nyc311_daily_ingestion():
 
     @task(task_id="send_daily_summary")
     def send_daily_summary(**context):
-        """Optional: Send daily processing summary"""
+        """Send daily processing summary email"""
         ti = context['task_instance']
         extract_result = ti.xcom_pull(task_ids='extract_and_load_daily')
         validation_result = ti.xcom_pull(task_ids='validate_daily_data')
         
-        # Create summary
+        date = extract_result.get('date')
+        status = extract_result.get('status')
+        record_count = extract_result.get('record_count', 0)
+        file_size_mb = extract_result.get('file_size_mb', 0)
+        validation_status = validation_result.get('validation_status')
+        s3_key = extract_result.get('s3_key', 'N/A')
+        
+        # Email subject
+        subject = f"NYC 311 Daily Report - {date}"
+        if status == 'failed' or validation_status == 'failed':
+            subject = f"❌ {subject} - Failed"
+        elif validation_status == 'warning':
+            subject = f"⚠️ {subject} - Warning"
+        elif status == 'skipped':
+            subject = f"⏭️ {subject} - Skipped"
+        else:
+            subject = f"✅ {subject} - Success"
+        
+        # Basit HTML email içeriği
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif;">
+            <h3 style="color: #2c3e50;">NYC 311 Daily Ingestion Report</h3>
+            
+            <div style="background-color: #ecf0f1; padding: 15px; border-radius: 5px; margin: 10px 0;">
+                <p><strong>📅 Date:</strong> {date}</p>
+                <p><strong>📊 Status:</strong> {status.upper()}</p>
+                <p><strong>📈 Records:</strong> {record_count:,}</p>
+                <p><strong>💾 File Size:</strong> {file_size_mb:.2f} MB</p>
+                <p><strong>✔️ Validation:</strong> {validation_status.upper()}</p>
+            </div>
+            
+            <p style="color: #7f8c8d; font-size: 12px;">
+                S3 Location: {s3_key}<br>
+                Processed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            </p>
+        </body>
+        </html>
+        """
+        
+        # Email gönder
+        try:
+            send_email(
+                to=["omrdgn2212@gmail.com"],
+                subject=subject,
+                html_content=html_content,
+                conn_id='smtp_default'
+            )
+            logging.info(f"📧 Daily summary email sent for {date}")
+        except Exception as e:
+            logging.error(f"Failed to send daily email: {e}")
+        
+        # Summary döndür
         summary = {
             "dag_run_date": context['ds'],
             "execution_date": context['ts'],
-            "extract_status": extract_result.get('status'),
-            "record_count": extract_result.get('record_count', 0),
-            "file_size_mb": extract_result.get('file_size_mb', 0),
-            "validation_status": validation_result.get('validation_status'),
-            "s3_key": extract_result.get('s3_key')
+            "extract_status": status,
+            "record_count": record_count,
+            "file_size_mb": file_size_mb,
+            "validation_status": validation_status,
+            "s3_key": s3_key
         }
         
         logging.info(f"📊 Daily Summary for {context['ds']}: {summary}")

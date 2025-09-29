@@ -1,0 +1,20 @@
+version: 2
+
+sources:
+  - name: silver_311
+    description: "NYC 311 Silver Layer"
+    database: nyc_311_dev
+    schema: silver
+    tables:
+      - name: silver_enriched_311
+        description: "Enriched 311 complaints from silver layer"
+        columns:
+          - name: unique_key
+            description: "Primary key"
+            data_tests:
+              - unique
+              - not_null
+          - name: _processed_timestamp
+            description: "Processing timestamp for incremental loading"
+            data_tests:
+              - not_null
