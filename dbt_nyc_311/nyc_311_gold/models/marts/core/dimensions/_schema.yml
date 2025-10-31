@@ -1,0 +1,62 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: "Date dimension with calendar attributes"
+    columns:
+      - name: date_key
+        tests:
+          - unique
+          - not_null
+      - name: date_actual
+        tests:
+          - not_null
+
+  - name: dim_location
+    description: "Location dimension with NYC boroughs and ZIP codes"
+    columns:
+      - name: location_id
+        tests:
+          - unique
+          - not_null
+      - name: location_key
+        tests:
+          - unique
+      - name: borough
+        tests:
+          - not_null
+      - name: zip_code
+        tests:
+          - not_null
+
+  - name: dim_agency
+    description: "NYC agency dimension"
+    columns:
+      - name: agency_id
+        tests:
+          - unique
+          - not_null
+      - name: agency_key
+        tests:
+          - unique
+          - not_null
+      - name: agency_name
+        tests:
+          - not_null
+
+  - name: dim_complaint_type
+    description: "Complaint type dimension with categorization"
+    columns:
+      - name: complaint_type_key
+        tests:
+          - unique
+          - not_null
+      - name: complaint_type
+        tests:
+          - not_null
+      - name: descriptor
+        tests:
+          - not_null
+      - name: complaint_category
+        tests:
+          - not_null

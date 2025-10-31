@@ -1,11 +1,18 @@
-# NYC 311 Gold Layer Project
+# ========================================
+# NYC 311 GOLD LAYER PROJECT
+# ========================================
 name: 'nyc_311_gold'
 version: '1.0.0'
+config-version: 2
 
-# Profile configuration
+# ========================================
+# PROFILE CONFIGURATION
+# ========================================
 profile: 'nyc_311_gold'
 
-# File paths
+# ========================================
+# FILE PATHS
+# ========================================
 model-paths: ["models"]
 analysis-paths: ["analyses"]
 test-paths: ["tests"]
@@ -13,84 +20,265 @@ seed-paths: ["seeds"]
 macro-paths: ["macros"]
 snapshot-paths: ["snapshots"]
 
-# Clean targets
+# ========================================
+# OUTPUT TARGETS
+# ========================================
+target-path: "target"
 clean-targets:
   - "target"
   - "dbt_packages"
+  - "logs"
 
-# Project variables
+# ========================================
+# PROJECT VARIABLES
+# ========================================
 vars:
-  # Lookback days for incremental loading
-  incremental_lookback_days: 3
+  # Incremental loading configuration
+  incremental_lookback_days: 7  # Lookback period for incremental models (in days)
+  
+  # Date range for analysis
+  analysis_start_date: '2010-01-01'
+  analysis_end_date: '2030-12-31'
+  
+  # Data quality thresholds
+  max_unspecified_borough_pct: 2.0
+  max_response_time_days: 730  # 2 years
+  
+  # SLA thresholds
+  sla_hours_threshold: 72
 
-# Model configurations
+# ========================================
+# ON-RUN-START & ON-RUN-END HOOKS
+# ========================================
+on-run-start:
+  - "{{ log('========================================', info=true) }}"
+  - "{{ log('🚀 NYC 311 Gold Layer Build Started', info=true) }}"
+  - "{{ log('Target: ' ~ target.name ~ ' | Schema: ' ~ target.schema, info=true) }}"
+  - "{{ log('Threads: ' ~ flags.THREADS ~ ' | Time: ' ~ run_started_at.strftime('%Y-%m-%d %H:%M:%S'), info=true) }}"
+  - "{{ log('========================================', info=true) }}"
+
+on-run-end:
+  - "{{ log('========================================', info=true) }}"
+  - "{{ log('✅ NYC 311 Gold Layer Build Completed', info=true) }}"
+  - "{% if results %}{{ log('✓ Success: ' ~ results | selectattr('status', 'equalto', 'success') | list | length ~ ' | ✗ Failed: ' ~ results | rejectattr('status', 'equalto', 'success') | list | length, info=true) }}{% endif %}"
+  - "{{ log('Finished at: ' ~ now().strftime('%Y-%m-%d %H:%M:%S'), info=true) }}"
+  - "{{ log('========================================', info=true) }}"
+
+# ========================================
+# MODEL CONFIGURATIONS
+# ========================================
 models:
   nyc_311_gold:
-    # Global settings
+    # ========================================
+    # GLOBAL DEFAULTS
+    # ========================================
+    +materialized: table
+    +schema: gold
+    +file_format: delta
     +persist_docs:
       relation: true
       columns: true
+    +on_schema_change: "append_new_columns"
     
-    # Marts layer - Gold tables
+    # ========================================
+    # INTERMEDIATE LAYER
+    # ========================================
+    #intermediate:
+    #  +schema: intermediate
+    #  +materialized: view
+    #  +tags: ["intermediate"]
+    
+    # ========================================
+    # MARTS LAYER
+    # ========================================
     marts:
-      # Core operational data
-      core:
+      # ----------------------------------------
+      # ANALYTICS (Full Refresh - Research)
+      # ----------------------------------------
+      analytics:
         +materialized: table
-        +file_format: delta
-        +schema: core
-        +tags: ["core"]
+        +schema: gold
+        +tags: ["analytics", "gold"]
         
-        # Dimensions - Full refresh
+        covid_impact_analysis:
+          +materialized: table
+          +tags: ["covid", "research", "analytics", "gold"]
+          +post-hook: "{{ log('✓ COVID Impact Analysis completed', info=true) }}"
+        
+        holiday_pattern_analysis:
+          +materialized: table
+          +tags: ["holiday", "seasonal", "analytics", "gold"]
+          +post-hook: "{{ log('✓ Holiday Pattern Analysis completed', info=true) }}"
+        
+        seasonal_trends:
+          +materialized: table
+          +tags: ["seasonal", "trends", "analytics", "gold"]
+          +post-hook: "{{ log('✓ Seasonal Trends Analysis completed', info=true) }}"
+      
+      # ----------------------------------------
+      # CORE - DIMENSIONS
+      # ----------------------------------------
+      core:
         dimensions:
+          +materialized: table
+          +schema: gold
           +tags: ["dimension", "gold"]
           
-        # Fact table - Incremental
+          dim_date:
+            +materialized: table
+            +tags: ["dimension", "static", "gold"]
+            +pre-hook: "{{ log('🔄 Building dim_date (2010-2030)', info=true) }}"
+            +post-hook: "{{ log('✓ dim_date built successfully', info=true) }}"
+          
+          dim_location:
+            +materialized: table
+            +tags: ["dimension", "daily", "gold"]
+            +pre-hook: "{{ log('🔄 Building dim_location', info=true) }}"
+            +post-hook: "{{ log('✓ dim_location built successfully', info=true) }}"
+          
+          dim_agency:
+            +materialized: table
+            +tags: ["dimension", "reference", "gold"]
+            +pre-hook: "{{ log('🔄 Building dim_agency', info=true) }}"
+            +post-hook: "{{ log('✓ dim_agency built successfully', info=true) }}"
+          
+          dim_complaint_type:
+            +materialized: table
+            +tags: ["dimension", "daily", "gold"]
+            +pre-hook: "{{ log('🔄 Building dim_complaint_type', info=true) }}"
+            +post-hook: "{{ log('✓ dim_complaint_type built successfully', info=true) }}"
+        
+        # ----------------------------------------
+        # CORE - FACTS
+        # ----------------------------------------
         facts:
           +materialized: incremental
           +incremental_strategy: merge
+          +schema: gold
+          +tags: ["fact", "gold"]
           +on_schema_change: fail
-          +tags: ["fact", "gold", "incremental"]
-          fct_complaints:
+          
+          fact_311:
+            +materialized: incremental
             +unique_key: unique_key
-            
-        # Aggregations - Incremental
-        agg_daily_summary:
-          +materialized: incremental
-          +unique_key: date_key
-          +tags: ["aggregation", "daily"]
+            +incremental_strategy: merge
+            +merge_update_columns: all
+            +partition_by: ['created_year'] 
+            +cluster_by: ['agency_code','created_month']
+            +tags: ["fact", "high_volume", "core", "incremental", "gold"]
+            +pre-hook: "{{ log('🔄 Loading fact_311 (watermark-based)', info=true) }}"
+            +post-hook:
+              - "{{ log('✓ fact_311 loaded. Running OPTIMIZE...', info=true) }}"
+              - "OPTIMIZE {{ this }} WHERE created_year >= year(date_sub(current_date(), 90)) ZORDER BY (agency_code, created_month)"
+              
           
-        agg_monthly_summary:
-          +materialized: incremental
-          +unique_key: month_key
-          +tags: ["aggregation", "monthly"]
-          
-        agg_agency_metrics:
-          +materialized: incremental
-          +unique_key: ['agency_key', 'date_key']
-          +tags: ["aggregation", "daily"]
-          
-        agg_location_metrics:
-          +materialized: incremental
-          +unique_key: ['location_key', 'date_key']
-          +tags: ["aggregation", "daily"]
-          
-      # Analytics insights and research
-      analytics:
-        +materialized: table
-        +file_format: delta
-        +schema: analytics
-        +tags: ["analytics", "research"]
-        
-        covid_impact_analysis:
-          +tags: ["covid", "analytics"]
-          
-        holiday_pattern_analysis:
-          +tags: ["holiday", "seasonal", "analytics"]
-          
-        seasonal_trends:
-          +tags: ["seasonal", "trends", "analytics"]
+          # ----------------------------------------
+          # AGGREGATIONS (Incremental)
+          # ----------------------------------------
 
-# Test configurations
+        aggregations:
+          +materialized: incremental
+          +tags: ["aggregation", "gold"] 
+          agg_agency_metrics:
+            +materialized: incremental
+            +unique_key: ["agency_key", "date_key"]
+            +tags: ["aggregation", "metrics", "agency", "performance", "gold"]
+            +pre-hook: "{{ log('🔄 Building agg_agency_metrics', info=true) }}"
+          
+          agg_daily_summary:
+            +materialized: incremental
+            +unique_key: date_key
+            +tags: ["aggregation", "daily", "reporting", "gold"]
+            +pre-hook: "{{ log('🔄 Building agg_daily_summary', info=true) }}"
+          
+          agg_location_metrics:
+            +materialized: incremental
+            +unique_key: ["location_key", "date_key"]
+            +tags: ["aggregation", "metrics", "location", "geographic", "gold"]
+            +pre-hook: "{{ log('🔄 Building agg_location_metrics', info=true) }}"
+          
+          agg_monthly_summary:
+            +materialized: incremental
+            +unique_key: month_key
+            +tags: ["aggregation", "monthly", "executive", "gold"]
+            +pre-hook: "{{ log('🔄 Building agg_monthly_summary', info=true) }}"
+      
+      # ----------------------------------------
+      # ML FEATURES
+      # ----------------------------------------
+      ml_features:
+        +materialized: table
+        +schema: gold
+        +tags: ["ml_features", "gold"]
+        
+        volume_forecasting_features:
+          +materialized: table
+          +tags: ["forecasting", "time_series", "ml", "gold"]
+          +pre-hook: "{{ log('🔄 Building ML features for forecasting', info=true) }}"
+          +post-hook: "{{ log('✓ ML features built successfully', info=true) }}"
+    
+    # ========================================
+    # STAGING LAYER
+    # ========================================
+    #staging:
+    #  +schema: staging
+    #  +materialized: view
+    #  +tags: ["staging"]
+
+# ========================================
+# TEST CONFIGURATIONS
+# ========================================
 tests:
-  +store_failures: true
-  +severity: warn
+  nyc_311_gold:
+    +store_failures: false
+    +store_failures_as: table
+    +schema: test_results
+    +severity: warn
+    
+    # Critical tests - error severity
+    marts:
+      core:
+        dimensions:
+          +severity: error
+        facts:
+          +severity: error
+
+# ========================================
+# SEEDS CONFIGURATION
+# ========================================
+#seeds:
+#  nyc_311_gold:
+#    +schema: seeds
+#    +file_format: delta
+#    +tags: ["seeds"]
+#    +quote_columns: false 
+
+# ========================================
+# SNAPSHOTS CONFIGURATION
+# ========================================
+#snapshots:
+#  nyc_311_gold:
+#    +target_schema: snapshots
+#    +strategy: timestamp
+#    +updated_at: updated_at
+#    +file_format: delta
+#    +tags: ["snapshot"]
+
+# ========================================
+# DISPATCH CONFIGURATION
+# ========================================
+dispatch:
+  - macro_namespace: dbt_utils
+    search_order: ['spark_utils', 'dbt_utils']
+
+# ========================================
+# QUERY COMMENT (for Debugging)
+# ========================================
+query-comment:
+  comment: "dbt:{{ node.unique_id }} | user:{{ target.user }} | {{ dbt_version }}"
+  append: true
+
+# ========================================
+# REQUIRED DBT VERSION
+# ========================================
+require-dbt-version: [">=1.5.0", "<2.0.0"]

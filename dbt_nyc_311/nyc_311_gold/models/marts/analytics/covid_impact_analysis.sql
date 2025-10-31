@@ -1,8 +1,8 @@
--- COVID-19 Impact Analysis on NYC 311 Complaints
+-- COVID-19 Impact Analysis on NYC 311 Complaints - ALIGNED WITH FACT TABLE
 {{ 
   config(
     materialized='table',
-    tags=['analytics', 'covid']
+    tags=['analytics', 'covid', 'research']
   ) 
 }}
 
@@ -12,14 +12,14 @@ with date_periods as (
         date_actual,
         year,
         month,
+        month_name,
         case 
-            when date_actual between '2019-01-01' and '2020-03-15' then 'Pre-COVID'
-            when date_actual between '2020-03-16' and '2021-06-30' then 'COVID Peak'
-            when date_actual >= '2021-07-01' then 'Post-COVID'
-            else 'Other'
+            when date_actual < date('2020-03-16') then 'Pre-COVID'
+            when date_actual between date('2020-03-16') and date('2021-06-30') then 'COVID Peak'
+            when date_actual > date('2021-06-30') then 'Post-COVID'
         end as covid_period,
         case 
-            when date_actual between '2020-03-16' and '2021-06-30' then true 
+            when date_actual between date('2020-03-16') and date('2021-06-30') then true 
             else false 
         end as is_covid_period
     from {{ ref('dim_date') }}
@@ -28,38 +28,106 @@ with date_periods as (
 
 complaint_base as (
     select
-        f.*,
+        f.unique_key,
+        f.created_date_key,
+        f.closed_date_key,
+        f.status,
+        f.is_closed,
+        
+        -- Valid response time fields with data quality flags
+        case 
+            when f.is_closed 
+                and not f.has_invalid_closed_date
+                and not f.has_historical_closed_date
+                and not f.has_future_closed_date
+                and f.response_time_hours is not null
+                and f.response_time_hours >= 0  -- Added: Exclude negative values
+            then f.response_time_hours
+            else null
+        end as valid_response_time_hours,
+        
+        case 
+            when f.is_closed 
+                and not f.has_invalid_closed_date
+                and not f.has_historical_closed_date
+                and not f.has_future_closed_date
+                and f.response_time_days is not null
+                and f.response_time_days >= 0  -- Added: Exclude negative values
+            then f.response_time_days
+            else null
+        end as valid_response_time_days,
+        
+        -- Use validated SLA category (exclude invalid categories)
+        case
+            when f.response_sla_category in ('INVALID_DATE', 'NEGATIVE_TIME', 'NO_DATE', 'OPEN') then null
+            else f.response_sla_category
+        end as valid_sla_category,
+        
+        f.borough,
+        f.agency_code,
+        f.complaint_type,
+        f.descriptor,
+        
+        -- Data quality flags for tracking
+        f.has_invalid_closed_date,
+        f.has_historical_closed_date,
+        f.has_future_closed_date,
+        f.has_closed_status_without_date,
+        f.open_status_with_closed_date,
+        
         dp.covid_period,
         dp.is_covid_period,
         dp.year,
         dp.month,
-        a.agency_name,
-        a.agency_category,
-        l.borough,
-        ct.complaint_category,
-        ct.complaint_type
-    from {{ ref('fct_complaints') }} f
-    inner join date_periods dp on f.created_date_key = dp.date_key
-    inner join {{ ref('dim_agency') }} a on f.agency_key = a.agency_key
-    inner join {{ ref('dim_location') }} l on f.location_key = l.location_key
-    inner join {{ ref('dim_complaint_type') }} ct on f.complaint_type_key = ct.complaint_type_key
+        dp.month_name,
+        dp.date_actual,
+        ct.complaint_category
+        
+    from {{ ref('fact_311') }} f
+    inner join date_periods dp 
+        on f.created_date_key = dp.date_key
+    left join {{ ref('dim_complaint_type') }} ct 
+        on f.complaint_type_key = ct.complaint_type_key
 ),
 
--- Monthly aggregations by COVID period
+-- ============================================
+-- MONTHLY AGGREGATIONS BY COVID PERIOD
+-- ============================================
 monthly_covid_impact as (
     select
         year,
         month,
+        max(month_name) as month_name,
         covid_period,
         
         -- Volume metrics
         count(*) as total_complaints,
-        count(case when status = 'CLOSED' then 1 end) as closed_complaints,
+        count(case when is_closed then 1 end) as closed_complaints,
         
-        -- Performance metrics
-        avg(case when status = 'CLOSED' then response_time_hours end) as avg_response_time,
-        round(count(case when response_sla_category = 'WITHIN_SLA' and status = 'CLOSED' then 1 end) * 100.0 / 
-            nullif(count(case when status = 'CLOSED' then 1 end), 0), 2) as sla_compliance_rate,
+        -- Response time metrics (VALID data only)
+        count(case when is_closed and valid_response_time_hours is not null then 1 end) as complaints_with_valid_response_time,
+        avg(valid_response_time_hours) as avg_response_time_hours,
+        avg(valid_response_time_days) as avg_response_time_days,
+        percentile_approx(valid_response_time_hours, 0.5) as median_response_time_hours,
+        percentile_approx(valid_response_time_days, 0.5) as median_response_time_days,
+        
+        -- SLA metrics (VALID categories only)
+        round(count(case when valid_sla_category = 'SAME_DAY' then 1 end) * 100.0 / 
+            nullif(count(case when valid_sla_category is not null then 1 end), 0), 2) as same_day_closure_rate,
+        round(count(case when valid_sla_category = 'WITHIN_WEEK' then 1 end) * 100.0 / 
+            nullif(count(case when valid_sla_category is not null then 1 end), 0), 2) as within_week_rate,
+        round(count(case when valid_sla_category = 'WITHIN_MONTH' then 1 end) * 100.0 / 
+            nullif(count(case when valid_sla_category is not null then 1 end), 0), 2) as within_month_rate,
+        round(count(case when valid_sla_category = 'OVER_MONTH' then 1 end) * 100.0 / 
+            nullif(count(case when valid_sla_category is not null then 1 end), 0), 2) as over_month_rate,
+        count(case when valid_sla_category is not null then 1 end) as total_valid_for_sla,
+            
+        -- Data quality metrics
+        count(case when has_invalid_closed_date then 1 end) as invalid_closed_dates,
+        count(case when has_closed_status_without_date then 1 end) as closed_without_date,
+        count(case when open_status_with_closed_date then 1 end) as open_with_closed_date,
+        round(count(case when is_closed and valid_response_time_hours is not null then 1 end) * 100.0 / 
+            nullif(count(case when is_closed then 1 end), 0), 2) as response_time_data_quality_pct,
             
         -- Category breakdowns
         count(case when complaint_category = 'Noise' then 1 end) as noise_complaints,
@@ -71,13 +139,16 @@ monthly_covid_impact as (
         -- Specific COVID-related patterns
         count(case when upper(complaint_type) like '%COVID%' then 1 end) as covid_specific_complaints,
         count(case when upper(complaint_type) like '%NOISE - RESIDENTIAL%' then 1 end) as residential_noise_complaints,
-        count(case when upper(complaint_type) like '%OUTDOOR DINING%' then 1 end) as outdoor_dining_complaints
+        count(case when upper(complaint_type) like '%OUTDOOR DINING%' then 1 end) as outdoor_dining_complaints,
+        count(case when upper(complaint_type) like '%ILLEGAL PARKING%' then 1 end) as illegal_parking_complaints
         
     from complaint_base
-    group by 1, 2, 3
+    group by year, month, covid_period
 ),
 
--- Pre-COVID baseline calculation (2019 average)
+-- ============================================
+-- PRE-COVID BASELINE (2019 average)
+-- ============================================
 pre_covid_baseline as (
     select
         month,
@@ -85,29 +156,79 @@ pre_covid_baseline as (
         avg(noise_complaints) as baseline_noise_complaints,
         avg(transportation_complaints) as baseline_transportation_complaints,
         avg(housing_complaints) as baseline_housing_complaints,
-        avg(avg_response_time) as baseline_response_time
+        avg(avg_response_time_hours) as baseline_response_time_hours,
+        avg(avg_response_time_days) as baseline_response_time_days,
+        avg(same_day_closure_rate) as baseline_same_day_rate,
+        avg(within_week_rate) as baseline_within_week_rate
     from monthly_covid_impact
     where covid_period = 'Pre-COVID' and year = 2019
-    group by 1
+    group by month
 ),
 
--- Borough-level COVID impact
+-- ============================================
+-- BOROUGH-LEVEL COVID IMPACT
+-- ============================================
 borough_covid_impact as (
     select
         borough,
         covid_period,
         count(*) as complaints_count,
-        round(avg(case when status = 'CLOSED' then response_time_hours end), 2) as avg_response_time,
+        count(case when is_closed then 1 end) as closed_count,
+        round(count(case when is_closed then 1 end) * 100.0 / nullif(count(*), 0), 2) as closure_rate,
+        round(avg(valid_response_time_hours), 2) as avg_response_time_hours,
+        round(avg(valid_response_time_days), 2) as avg_response_time_days,
         count(case when complaint_category = 'Noise' then 1 end) as noise_count,
-        round(count(case when complaint_category = 'Noise' then 1 end) * 100.0 / count(*), 2) as noise_percentage
+        round(count(case when complaint_category = 'Noise' then 1 end) * 100.0 / nullif(count(*), 0), 2) as noise_percentage,
+        count(case when complaint_category = 'Transportation' then 1 end) as transportation_count,
+        round(count(case when complaint_category = 'Transportation' then 1 end) * 100.0 / nullif(count(*), 0), 2) as transportation_percentage
     from complaint_base
-    group by 1, 2
+    where borough != 'UNSPECIFIED'
+    group by borough, covid_period
 ),
 
+-- ============================================
+-- AGENCY-LEVEL COVID IMPACT
+-- ============================================
+agency_covid_impact as (
+    select
+        agency_code,
+        covid_period,
+        count(*) as complaints_count,
+        count(case when is_closed then 1 end) as closed_count,
+        round(avg(valid_response_time_hours), 2) as avg_response_time_hours,
+        round(avg(valid_response_time_days), 2) as avg_response_time_days,
+        round(count(case when is_closed then 1 end) * 100.0 / nullif(count(*), 0), 2) as closure_rate,
+        round(count(case when valid_sla_category = 'SAME_DAY' then 1 end) * 100.0 / 
+            nullif(count(case when valid_sla_category is not null then 1 end), 0), 2) as same_day_rate
+    from complaint_base
+    where agency_code is not null and agency_code != 'UNKNOWN'
+    group by agency_code, covid_period
+),
+
+-- ============================================
+-- TOP COMPLAINT TYPES BY PERIOD
+-- ============================================
+top_complaints_by_period as (
+    select
+        covid_period,
+        complaint_type,
+        count(*) as complaint_count,
+        count(case when is_closed then 1 end) as closed_count,
+        round(avg(valid_response_time_days), 2) as avg_days_to_close,
+        row_number() over (partition by covid_period order by count(*) desc) as rank_in_period
+    from complaint_base
+    where complaint_type is not null and complaint_type != 'UNKNOWN'
+    group by covid_period, complaint_type
+),
+
+-- ============================================
+-- FINAL ASSEMBLY
+-- ============================================
 final as (
     select
         mci.year,
         mci.month,
+        mci.month_name,
         mci.covid_period,
         
         -- Volume metrics
@@ -115,45 +236,101 @@ final as (
         pcb.baseline_monthly_complaints,
         round((mci.total_complaints - pcb.baseline_monthly_complaints) * 100.0 / 
             nullif(pcb.baseline_monthly_complaints, 0), 2) as volume_change_pct,
+        mci.total_complaints - coalesce(pcb.baseline_monthly_complaints, 0) as volume_change_absolute,
         
-        -- Performance impact
-        mci.avg_response_time,
-        pcb.baseline_response_time,
-        round((mci.avg_response_time - pcb.baseline_response_time) * 100.0 / 
-            nullif(pcb.baseline_response_time, 0), 2) as response_time_change_pct,
+        -- Closure metrics
+        mci.closed_complaints,
+        round(mci.closed_complaints * 100.0 / nullif(mci.total_complaints, 0), 2) as closure_rate,
         
-        mci.sla_compliance_rate,
+        -- Response time metrics with data quality
+        mci.complaints_with_valid_response_time,
+        mci.response_time_data_quality_pct,
+        mci.avg_response_time_hours,
+        mci.avg_response_time_days,
+        mci.median_response_time_hours,
+        mci.median_response_time_days,
+        pcb.baseline_response_time_hours,
+        pcb.baseline_response_time_days,
+        round((mci.avg_response_time_hours - pcb.baseline_response_time_hours) * 100.0 / 
+            nullif(pcb.baseline_response_time_hours, 0), 2) as response_time_hours_change_pct,
+        round((mci.avg_response_time_days - pcb.baseline_response_time_days) * 100.0 / 
+            nullif(pcb.baseline_response_time_days, 0), 2) as response_time_days_change_pct,
+        
+        -- SLA metrics using valid categories
+        mci.total_valid_for_sla,
+        mci.same_day_closure_rate,
+        pcb.baseline_same_day_rate,
+        round(mci.same_day_closure_rate - pcb.baseline_same_day_rate, 2) as same_day_rate_change_points,
+        
+        mci.within_week_rate,
+        pcb.baseline_within_week_rate,
+        round(mci.within_week_rate - pcb.baseline_within_week_rate, 2) as within_week_rate_change_points,
+        
+        mci.within_month_rate,
+        mci.over_month_rate,
+        
+        -- Data quality metrics
+        mci.invalid_closed_dates,
+        mci.closed_without_date,
+        mci.open_with_closed_date,
+        round(mci.invalid_closed_dates * 100.0 / nullif(mci.total_complaints, 0), 2) as invalid_date_pct,
         
         -- Category shifts
         mci.noise_complaints,
         pcb.baseline_noise_complaints,
         round((mci.noise_complaints - pcb.baseline_noise_complaints) * 100.0 / 
             nullif(pcb.baseline_noise_complaints, 0), 2) as noise_change_pct,
+        round(mci.noise_complaints * 100.0 / nullif(mci.total_complaints, 0), 2) as noise_mix_pct,
             
         mci.transportation_complaints,
         pcb.baseline_transportation_complaints,
         round((mci.transportation_complaints - pcb.baseline_transportation_complaints) * 100.0 / 
             nullif(pcb.baseline_transportation_complaints, 0), 2) as transportation_change_pct,
+        round(mci.transportation_complaints * 100.0 / nullif(mci.total_complaints, 0), 2) as transportation_mix_pct,
             
         mci.housing_complaints,
+        round(mci.housing_complaints * 100.0 / nullif(mci.total_complaints, 0), 2) as housing_mix_pct,
+        
         mci.sanitation_complaints,
+        round(mci.sanitation_complaints * 100.0 / nullif(mci.total_complaints, 0), 2) as sanitation_mix_pct,
+        
         mci.quality_of_life_complaints,
+        round(mci.quality_of_life_complaints * 100.0 / nullif(mci.total_complaints, 0), 2) as quality_of_life_mix_pct,
         
         -- COVID-specific metrics
         mci.covid_specific_complaints,
         mci.residential_noise_complaints,
         mci.outdoor_dining_complaints,
+        mci.illegal_parking_complaints,
         
         -- Pattern indicators
         case 
-            when mci.noise_complaints > pcb.baseline_noise_complaints * 1.2 then 'High Noise Period'
-            when mci.transportation_complaints < pcb.baseline_transportation_complaints * 0.8 then 'Low Transit Period'
-            when mci.total_complaints < pcb.baseline_monthly_complaints * 0.9 then 'Low Activity Period'
+            when mci.noise_complaints > coalesce(pcb.baseline_noise_complaints, 0) * 1.3 then 'High Noise Period'
+            when mci.transportation_complaints < coalesce(pcb.baseline_transportation_complaints, mci.transportation_complaints) * 0.7 then 'Low Transit Period'
+            when mci.total_complaints < coalesce(pcb.baseline_monthly_complaints, mci.total_complaints) * 0.85 then 'Low Activity Period'
+            when mci.residential_noise_complaints > mci.noise_complaints * 0.5 then 'WFH Impact High'
             else 'Normal Pattern'
         end as covid_pattern_indicator,
         
         -- WFH impact score (proxy: residential noise vs transportation ratio)
         round(mci.noise_complaints * 1.0 / nullif(mci.transportation_complaints, 1), 2) as wfh_impact_score,
+        
+        -- Seasonality adjustment flag
+        case 
+            when mci.month in (6, 7, 8) then 'Summer'
+            when mci.month in (12, 1, 2) then 'Winter'
+            when mci.month in (3, 4, 5) then 'Spring'
+            when mci.month in (9, 10, 11) then 'Fall'
+        end as season,
+        
+        -- COVID phase classification
+        case 
+            when mci.covid_period = 'COVID Peak' and mci.year = 2020 and mci.month between 3 and 6 then 'Lockdown Phase'
+            when mci.covid_period = 'COVID Peak' and mci.year = 2020 and mci.month between 7 and 12 then 'Early Recovery'
+            when mci.covid_period = 'COVID Peak' and mci.year = 2021 then 'Late Recovery'
+            when mci.covid_period = 'Post-COVID' then 'New Normal'
+            when mci.covid_period = 'Pre-COVID' then 'Baseline'
+        end as covid_phase,
         
         -- Metadata
         current_timestamp() as created_at
@@ -164,3 +341,104 @@ final as (
 
 select * from final
 order by year, month
+
+-- ========================================
+-- VALIDATION QUERIES
+-- ========================================
+/*
+-- 1. COVID period comparison summary with data quality
+SELECT 
+    covid_period,
+    COUNT(*) as months_in_period,
+    AVG(total_complaints) as avg_monthly_complaints,
+    AVG(volume_change_pct) as avg_change_from_baseline,
+    AVG(noise_mix_pct) as avg_noise_pct,
+    AVG(transportation_mix_pct) as avg_transportation_pct,
+    AVG(closure_rate) as avg_closure_rate,
+    AVG(same_day_closure_rate) as avg_same_day_rate,
+    AVG(response_time_data_quality_pct) as avg_data_quality,
+    AVG(invalid_date_pct) as avg_invalid_dates
+FROM {{ this }}
+GROUP BY covid_period
+ORDER BY 
+    CASE covid_period 
+        WHEN 'Pre-COVID' THEN 1 
+        WHEN 'COVID Peak' THEN 2 
+        WHEN 'Post-COVID' THEN 3 
+    END;
+
+-- 2. Response time trends (VALID DATA ONLY)
+SELECT 
+    year,
+    month,
+    month_name,
+    covid_period,
+    complaints_with_valid_response_time,
+    response_time_data_quality_pct,
+    avg_response_time_days,
+    median_response_time_days,
+    baseline_response_time_days,
+    response_time_days_change_pct
+FROM {{ this }}
+WHERE response_time_data_quality_pct >= 70  -- Only reliable months
+ORDER BY year, month;
+
+-- 3. SLA performance changes (VALID categories only)
+SELECT 
+    covid_period,
+    AVG(total_valid_for_sla) as avg_valid_cases,
+    AVG(same_day_closure_rate) as avg_same_day_rate,
+    AVG(within_week_rate) as avg_within_week_rate,
+    AVG(within_month_rate) as avg_within_month_rate,
+    AVG(over_month_rate) as avg_over_month_rate,
+    AVG(baseline_same_day_rate) as baseline_same_day,
+    AVG(same_day_rate_change_points) as same_day_change
+FROM {{ this }}
+WHERE total_valid_for_sla > 0  -- Only months with valid SLA data
+GROUP BY covid_period
+ORDER BY 
+    CASE covid_period 
+        WHEN 'Pre-COVID' THEN 1 
+        WHEN 'COVID Peak' THEN 2 
+        WHEN 'Post-COVID' THEN 3 
+    END;
+
+-- 4. Data quality assessment by period
+SELECT 
+    covid_period,
+    year,
+    AVG(response_time_data_quality_pct) as avg_data_quality,
+    AVG(invalid_date_pct) as avg_invalid_dates,
+    SUM(invalid_closed_dates) as total_invalid_dates,
+    SUM(closed_without_date) as total_closed_no_date,
+    SUM(open_with_closed_date) as total_open_with_date
+FROM {{ this }}
+GROUP BY covid_period, year
+ORDER BY year;
+*/
+
+/*
+FACT TABLE ALIGNMENT:
+=====================
+✓ Uses is_closed flag (not status check)
+✓ Valid response time with all data quality flags
+✓ Negative value exclusion (>= 0)
+✓ Valid SLA category (excludes INVALID_DATE, NEGATIVE_TIME, NO_DATE, OPEN)
+✓ SLA denominators use valid_sla_category count
+✓ Data quality tracking metrics included
+✓ English comments throughout
+
+KEY ENHANCEMENTS:
+================
+1. Added >= 0 check for response times
+2. Created valid_sla_category (excludes invalid categories)
+3. Changed SLA denominators to use valid_sla_category count
+4. Added total_valid_for_sla metric
+5. Updated validation queries to filter by data quality
+
+DATA QUALITY:
+=============
+- response_time_data_quality_pct: % of closed cases with valid times
+- total_valid_for_sla: Count of cases with valid SLA categories
+- Use >= 70% threshold for reliable analysis
+*/

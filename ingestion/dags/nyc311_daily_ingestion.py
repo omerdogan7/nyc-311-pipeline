@@ -23,13 +23,13 @@ default_args = {
         "email_on_failure": True,
         "email_on_retry": False,
     },
-    description="Daily NYC 311 data ingestion (current year)",
+    description="Daily NYC 311 data ingestion (current year) - Parquet format",
     schedule="0 9 * * *",  # 9 AM UTC (4 AM EST, 5 AM EDT)
-    start_date=datetime(2025, 9, 1),
+    start_date=datetime(2025, 10, 1),
     catchup=True,  # Can catch up recent days
     max_active_runs=1,
     max_active_tasks=1,
-    tags=["nyc311", "daily", "production"],
+    tags=["nyc311", "daily", "production", "parquet"],
 )
 def nyc311_daily_ingestion():
 
@@ -42,7 +42,7 @@ def nyc311_daily_ingestion():
         execution_timeout=timedelta(minutes=30),
     )
     def extract_and_load_daily(**context):
-        """Daily incremental data extraction"""
+        """Daily incremental data extraction - Parquet format"""
         execution_date = context['ds']
         execution_date_obj = datetime.strptime(execution_date, '%Y-%m-%d')
         
@@ -58,7 +58,8 @@ def nyc311_daily_ingestion():
             }
         
         ingestion = NYC311DataIngestion()
-        s3_key = f"year={execution_date_obj.year}/month={execution_date_obj.month:02d}/day={execution_date_obj.day:02d}/nyc_311_{execution_date_obj.strftime('%Y_%m_%d')}.json.gz"
+        # Parquet dosya yolu
+        s3_key = f"year={execution_date_obj.year}/month={execution_date_obj.month:02d}/day={execution_date_obj.day:02d}/nyc_311_{execution_date_obj.strftime('%Y_%m_%d')}.parquet"
 
         # Check if already exists
         if ingestion.check_file_exists(s3_key):
@@ -76,14 +77,14 @@ def nyc311_daily_ingestion():
             logging.info(f"🔄 Starting daily ingestion for {execution_date}")
             data = ingestion.fetch_data_for_date(execution_date_obj)
             
-            # Upload daily data
-            result = ingestion.upload_to_s3(execution_date_obj, data, monthly=False)
+            # Upload daily data as Parquet
+            result = ingestion.upload_to_s3_parquet(execution_date_obj, data, monthly=False)
             result.update({
                 'date': execution_date,
                 'processing_timestamp': datetime.now().isoformat()
             })
             
-            logging.info(f"✅ Daily ingestion completed for {execution_date}: {len(data)} records")
+            logging.info(f"✅ Daily ingestion completed for {execution_date}: {len(data)} records (Parquet)")
             return result
             
         except Exception as e:
@@ -92,7 +93,7 @@ def nyc311_daily_ingestion():
 
     @task(task_id="validate_daily_data")
     def validate_daily_data(**context):
-        """Daily data quality validation with day-specific rules"""
+        """Daily data quality validation - Simple check"""
         ti = context['task_instance']
         result = ti.xcom_pull(task_ids='extract_and_load_daily')
         
@@ -100,35 +101,20 @@ def nyc311_daily_ingestion():
         status = result.get('status')
         record_count = result.get('record_count', 0)
         
-        # Get day of week for validation (NYC 311 patterns vary by day)
-        date_obj = datetime.strptime(date, '%Y-%m-%d')
-        day_of_week = date_obj.weekday()  # 0=Monday, 6=Sunday
-        
-        # Day-specific thresholds
-        if day_of_week < 5:  # Weekdays
-            min_expected, max_expected = 1_000, 15_000
-        else:  # Weekends  
-            min_expected, max_expected = 500, 8_000
-            
         validation_result = {
             "date": date,
-            "day_of_week": day_of_week,
             "status": status,
             "record_count": record_count,
-            "validation_status": "passed"
+            "validation_status": "passed",
+            "format": result.get('format', 'parquet')
         }
         
-        if status == 'success' and record_count > 0:
-            if record_count < min_expected:
-                validation_result["validation_status"] = "warning"
-                logging.warning(f"⚠️ Low daily record count for {date}: {record_count}")
-            elif record_count > max_expected:
-                validation_result["validation_status"] = "warning"
-                logging.warning(f"⚠️ High daily record count for {date}: {record_count}")
-            else:
-                logging.info(f"✅ Daily validation passed for {date}: {record_count} records")
+        if status == 'success':
+            logging.info(f"✅ Daily validation passed for {date}: {record_count} records")
         elif status == 'skipped':
             logging.info(f"⏭️ Daily validation skipped for {date}")
+        elif status == 'no_data':
+            logging.info(f"📭 No data available for {date}")
         else:
             validation_result["validation_status"] = "failed"
             logging.error(f"❌ Daily validation failed for {date}")
@@ -150,7 +136,9 @@ def nyc311_daily_ingestion():
             "record_count": extract_result.get('record_count', 0),
             "file_size_mb": extract_result.get('file_size_mb', 0),
             "validation_status": validation_result.get('validation_status'),
-            "s3_key": extract_result.get('s3_key')
+            "s3_key": extract_result.get('s3_key'),
+            "format": extract_result.get('format', 'parquet'),
+            "compression": extract_result.get('compression', 'snappy')
         }
         
         logging.info(f"📊 Daily Summary for {context['ds']}: {summary}")

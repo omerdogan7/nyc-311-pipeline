@@ -285,12 +285,12 @@ def create_main_category_mapping(df_outcome_categories):
     return df_final
 
 
-@dlt.view(
+@dlt.table(
     name="silver_enriched_311", 
     comment="Parse resolution descriptions and derive analytical columns with categorization"
 )
 def silver_enrichments():
-    df = dlt.read_stream("silver_cleaned_311")
+    df = dlt.read_stream("silver_311_unified")
     
     # Apply resolution categorization
     df = create_outcome_categories(df)
@@ -333,5 +333,57 @@ def silver_enrichments():
     
     # Processing metadata
     df = df.withColumn("_enrichment_processed_timestamp", current_timestamp())
+
+    # FINAL PROCESSING - Select and order columns
+    final_columns = [
+        # Core identifiers and dates
+        "unique_key", "created_date", "closed_date", 
+        
+        # Agency and location
+        "agency", "agency_name", "borough", "city",
+        
+        # Complaint details
+        "complaint_type", "descriptor", "status",
+        
+        # Address information
+        "incident_address", "street_name", "cross_street_1", "cross_street_2",
+        "intersection_street_1", "intersection_street_2", "landmark",
+        "location_type", "community_board", "incident_zip",
+        
+        # Geographic coordinates
+        "latitude", "longitude", "has_valid_location",
+        
+        # Resolution information
+        "resolution_description", "resolution_action_updated_date",
+        "detailed_outcome_category", "main_outcome_category",
+        
+        # Analysis flags and metrics
+        "was_inspected", "violation_issued", "requires_follow_up",
+        "has_resolution", "is_closed",
+        
+        # Response time metrics
+        "response_time_hours", "response_time_days", "response_sla_category",
+        
+        # Temporal dimensions
+        "created_year", "created_month", "created_dayofweek", "created_hour",
+        "closed_year", "closed_month",
+        
+        # Temporal flags
+        "is_business_hours", "is_weekend",
+        
+        # Address classification
+        "address_type"
+    ]
+    
+    # Column validation
+    missing_cols = set(final_columns) - set(df.columns)
+    if missing_cols:
+        raise ValueError(f"Missing columns: {missing_cols}")
+    
+    # Final selection and processing timestamp
+    df = df.select(*final_columns) \
+           .withColumn("_processed_timestamp", current_timestamp())
     
     return df
+    
+    

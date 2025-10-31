@@ -1,0 +1,189 @@
+version: 2
+
+# ========================================
+# CUSTOM DATA QUALITY TESTS
+# ========================================
+
+tests:
+  # ----------------------------------------
+  # Cross-dimensional validation
+  # ----------------------------------------
+  - name: fact_borough_matches_location
+    description: "Validate denormalized borough matches dim_location"
+    config:
+      severity: warn
+      tags: ['cross_validation', 'fact']
+    sql: |
+      select 
+        f.unique_key,
+        f.borough as fact_borough,
+        l.borough as dim_borough
+      from {{ ref('fact_311') }} f
+      join {{ ref('dim_location') }} l 
+        on f.location_key = l.location_id
+      where f.borough != l.borough
+      limit 100
+
+  # ----------------------------------------
+  # Response time logic validation
+  # ----------------------------------------
+  - name: fact_closed_has_response_time
+    description: "Validate closed cases have response time calculated"
+    config:
+      severity: error
+      tags: ['business_logic', 'fact']
+    sql: |
+      select 
+        unique_key,
+        status,
+        is_closed,
+        response_time_hours,
+        response_time_days
+      from {{ ref('fact_311') }}
+      where is_closed = true
+        and (response_time_hours is null or response_time_days is null)
+      limit 100
+
+  # ----------------------------------------
+  # Date key consistency
+  # ----------------------------------------
+  - name: fact_closed_date_after_created
+    description: "Validate closed_date_key >= created_date_key"
+    config:
+      severity: error
+      tags: ['temporal_validation', 'fact']
+    sql: |
+      select 
+        unique_key,
+        created_date_key,
+        closed_date_key
+      from {{ ref('fact_311') }}
+      where closed_date_key is not null
+        and closed_date_key < created_date_key
+      limit 100
+
+  # ----------------------------------------
+  # Coordinate bounds validation
+  # ----------------------------------------
+  - name: fact_coordinates_within_nyc
+    description: "Validate lat/lon within NYC boundaries"
+    config:
+      severity: warn
+      tags: ['geo_validation', 'fact']
+    sql: |
+      select 
+        unique_key,
+        latitude,
+        longitude,
+        has_valid_location
+      from {{ ref('fact_311') }}
+      where has_valid_location = true
+        and (
+          latitude < 40.477399 or latitude > 40.917577
+          or longitude < -74.259090 or longitude > -73.700009
+        )
+      limit 100
+
+  # ----------------------------------------
+  # UNSPECIFIED borough analysis
+  # ----------------------------------------
+  - name: fact_unspecified_borough_threshold
+    description: "Alert if UNSPECIFIED borough exceeds 2% threshold"
+    config:
+      severity: warn
+      tags: ['data_quality', 'fact']
+    sql: |
+      select 
+        count(*) as unspecified_count,
+        round(count(*) * 100.0 / (select count(*) from {{ ref('fact_311') }}), 2) as unspecified_pct
+      from {{ ref('fact_311') }}
+      where borough = 'UNSPECIFIED'
+      having unspecified_pct > 2.0
+
+  # ----------------------------------------
+  # NULL foreign key validation
+  # ----------------------------------------
+  - name: fact_no_null_foreign_keys
+    description: "Ensure no NULL foreign keys in fact table"
+    config:
+      severity: error
+      tags: ['referential_integrity', 'fact']
+    sql: |
+      select 
+        unique_key,
+        case 
+          when agency_key is null then 'agency_key'
+          when location_key is null then 'location_key'
+          when complaint_type_key is null then 'complaint_type_key'
+          when created_date_key is null then 'created_date_key'
+        end as null_fk_column
+      from {{ ref('fact_311') }}
+      where agency_key is null
+        or location_key is null
+        or complaint_type_key is null
+        or created_date_key is null
+      limit 100
+
+  # ----------------------------------------
+  # Dimension coverage validation
+  # ----------------------------------------
+  - name: dim_location_covers_all_boroughs
+    description: "Ensure all 5 boroughs + UNSPECIFIED exist in dim_location"
+    config:
+      severity: error
+      tags: ['dimension_completeness']
+    sql: |
+      with expected_boroughs as (
+        select unnest(array('MANHATTAN', 'BROOKLYN', 'QUEENS', 'BRONX', 'STATEN ISLAND', 'UNSPECIFIED')) as borough
+      ),
+      actual_boroughs as (
+        select distinct borough
+        from {{ ref('dim_location') }}
+      )
+      select e.borough as missing_borough
+      from expected_boroughs e
+      left join actual_boroughs a on e.borough = a.borough
+      where a.borough is null
+
+  # ----------------------------------------
+  # Response time outlier detection
+  # ----------------------------------------
+  - name: fact_response_time_outliers
+    description: "Detect response times > 2 years (potential data issue)"
+    config:
+      severity: warn
+      tags: ['outlier_detection', 'fact']
+    sql: |
+      select 
+        unique_key,
+        agency_code,
+        complaint_type,
+        response_time_days,
+        created_date_key,
+        closed_date_key
+      from {{ ref('fact_311') }}
+      where response_time_days > 730
+      limit 100
+
+  # ----------------------------------------
+  # Date dimension completeness
+  # ----------------------------------------
+  - name: dim_date_no_gaps
+    description: "Ensure no gaps in date dimension (2010-2030)"
+    config:
+      severity: error
+      tags: ['dimension_completeness']
+    sql: |
+      with date_sequence as (
+        select 
+          cast(date_format(explode(sequence(to_date('2010-01-01'), to_date('2030-12-31'), interval 1 day)), 'yyyyMMdd') as int) as expected_date_key
+      ),
+      actual_dates as (
+        select date_key
+        from {{ ref('dim_date') }}
+      )
+      select s.expected_date_key as missing_date_key
+      from date_sequence s
+      left join actual_dates a on s.expected_date_key = a.date_key
+      where a.date_key is null
+      limit 10

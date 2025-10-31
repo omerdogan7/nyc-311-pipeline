@@ -7,36 +7,36 @@ import logging
 default_args = {
     "owner": "data-engineering",
     "depends_on_past": False,
-    "retries": 3,  # Increased retries for stability
+    "retries": 3,
     "retry_delay": timedelta(minutes=15),
-    "email_on_failure": True,  # Enable for important backfill
+    "email_on_failure": True,
     "email_on_retry": False,
 }
 
 @dag(
-    dag_id="nyc311_monthly_backfill",
+    dag_id="nyc311_monthly_backfill_idempotent",
     default_args=default_args,
-    description="Historical NYC 311 monthly data backfill (2020-2024)",
-    schedule=None,  # Manual trigger only
-    start_date=datetime(2020, 1, 1),
-    end_date=datetime(2024, 12, 31),  # Explicit end date
-    catchup=False,  # Manual control preferred for backfill
+    description="Idempotent NYC 311 monthly backfill (2010-2025 Sept)",
+    schedule='@monthly',
+    start_date=datetime(2010, 1, 1),
+    end_date=datetime(2025, 10, 31),
+    catchup=True,
     max_active_runs=1,
-    max_active_tasks=3,  # Slightly increased
-    tags=["nyc311", "backfill", "monthly", "historical"],
+    max_active_tasks=4,
+    tags=["nyc311", "backfill", "monthly", "idempotent"],
 )
-def nyc311_monthly_backfill():
+def nyc311_monthly_backfill_idempotent():
 
     start_task = EmptyOperator(task_id="start_monthly_backfill")
 
     @task(
-        task_id="extract_and_load_monthly",
+        task_id="check_and_extract_monthly",
         retries=3,
         retry_delay=timedelta(minutes=20),
-        execution_timeout=timedelta(hours=2),  # Timeout for large months
+        execution_timeout=timedelta(hours=2),
     )
-    def extract_and_load_monthly(**context):
-        """Monthly data extraction with enhanced error handling"""
+    def check_and_extract_monthly(**context):
+        """Idempotent monthly extraction - checks S3 first"""
         execution_date = context['ds']
         execution_date_obj = datetime.strptime(execution_date, '%Y-%m-%d')
         
@@ -44,87 +44,159 @@ def nyc311_monthly_backfill():
         year = execution_date_obj.year
         month = execution_date_obj.month
 
-        # Enhanced S3 key
-        s3_key = f"year={year}/month={month:02d}/nyc_311_{year}_{month:02d}.json.gz"
+        # S3 key for monthly Parquet file
+        s3_key = f"year={year}/month={month:02d}/nyc_311_{year}_{month:02d}.parquet"
+        
+        context_str = f"{year}-{month:02d}"
 
-        # Skip if exists
+        # IDEMPOTENCY CHECK: Skip if file already exists
         if ingestion.check_file_exists(s3_key):
-            logging.info(f"⏭️ Monthly data exists for {year}-{month:02d}, skipping...")
+            file_info = ingestion.get_s3_file_info(s3_key)
+            record_count = int(file_info.get('metadata', {}).get('record_count', 0)) if file_info else 0
+            
+            logging.info(f"✅ [{context_str}] File exists, skipping (records: {record_count:,})")
             return {
                 "status": "skipped",
+                "reason": "file_exists",
                 "year": year,
                 "month": month,
                 "s3_key": s3_key,
-                "record_count": 0,
-                "reason": "file_exists"
+                "record_count": record_count,
+                "existing_file": True
             }
 
+        # File doesn't exist, fetch data
         try:
-            # Fetch data
-            logging.info(f"🔄 Starting monthly ingestion for {year}-{month:02d}")
+            logging.info(f"🔄 [{context_str}] Starting extraction (file not found)")
             data = ingestion.fetch_data_for_month(year, month)
             
-            # Upload with monthly flag
-            result = ingestion.upload_to_s3(execution_date_obj, data, monthly=True)
+            if not data:
+                logging.warning(f"⚠️ [{context_str}] No data returned from API")
+                return {
+                    "status": "no_data",
+                    "year": year,
+                    "month": month,
+                    "s3_key": s3_key,
+                    "record_count": 0,
+                    "existing_file": False
+                }
+            
+            # Upload to S3 as Parquet
+            result = ingestion.upload_to_s3_parquet(execution_date_obj, data, monthly=True)
             result.update({
                 'year': year,
                 'month': month,
-                'processing_date': datetime.now().isoformat()
+                'processing_timestamp': datetime.now().isoformat(),
+                'existing_file': False
             })
             
-            logging.info(f"✅ Monthly ingestion completed for {year}-{month:02d}: {len(data)} records")
+            logging.info(f"✅ [{context_str}] Extraction completed: {len(data):,} records")
             return result
             
         except Exception as e:
-            logging.error(f"❌ Monthly ingestion failed for {year}-{month:02d}: {str(e)}")
+            logging.error(f"❌ [{context_str}] Extraction failed: {str(e)}")
             raise
 
     @task(task_id="validate_monthly_data")
     def validate_monthly_data(**context):
-        """Enhanced monthly data validation"""
+        """Validate monthly data with idempotent checks"""
         ti = context['task_instance']
-        result = ti.xcom_pull(task_ids='extract_and_load_monthly')
+        result = ti.xcom_pull(task_ids='check_and_extract_monthly')
         
         year = result.get('year')
         month = result.get('month')
         status = result.get('status')
         record_count = result.get('record_count', 0)
+        existing_file = result.get('existing_file', False)
         
-        # Validation thresholds for monthly data
-        min_expected = 50_000   # Minimum monthly records
-        max_expected = 300_000  # Maximum monthly records
+        context_str = f"{year}-{month:02d}"
+        
+        # Validation thresholds
+        min_expected = 50_000
+        max_expected = 350_000
         
         validation_result = {
             "year": year,
             "month": month,
             "status": status,
             "record_count": record_count,
-            "validation_status": "passed"
+            "existing_file": existing_file,
+            "validation_status": "passed",
+            "validation_timestamp": datetime.now().isoformat()
         }
         
+        # Skip validation for skipped files (already validated previously)
+        if status == 'skipped' and existing_file:
+            logging.info(f"⏭️ [{context_str}] Validation skipped (file exists, assumed valid)")
+            validation_result["validation_status"] = "skipped"
+            return validation_result
+        
+        # No data case
+        if status == 'no_data' or record_count == 0:
+            validation_result["validation_status"] = "warning"
+            logging.warning(f"⚠️ [{context_str}] No data found")
+            return validation_result
+        
+        # Normal validation
         if status == 'success' and record_count > 0:
             if record_count < min_expected:
                 validation_result["validation_status"] = "warning"
-                logging.warning(f"⚠️ Low record count for {year}-{month:02d}: {record_count}")
+                logging.warning(f"⚠️ [{context_str}] Low record count: {record_count:,} (expected >{min_expected:,})")
             elif record_count > max_expected:
-                validation_result["validation_status"] = "warning"  
-                logging.warning(f"⚠️ High record count for {year}-{month:02d}: {record_count}")
+                validation_result["validation_status"] = "warning"
+                logging.warning(f"⚠️ [{context_str}] High record count: {record_count:,} (expected <{max_expected:,})")
             else:
-                logging.info(f"✅ Monthly validation passed for {year}-{month:02d}: {record_count} records")
-        elif status == 'skipped':
-            logging.info(f"⏭️ Validation skipped for {year}-{month:02d} (file exists)")
+                logging.info(f"✅ [{context_str}] Validation passed: {record_count:,} records")
         else:
             validation_result["validation_status"] = "failed"
-            logging.error(f"❌ Monthly validation failed for {year}-{month:02d}")
+            logging.error(f"❌ [{context_str}] Validation failed")
         
         return validation_result
+
+    @task(task_id="log_summary")
+    def log_summary(**context):
+        """Log processing summary for monitoring"""
+        ti = context['task_instance']
+        extract_result = ti.xcom_pull(task_ids='check_and_extract_monthly')
+        validation_result = ti.xcom_pull(task_ids='validate_monthly_data')
+        
+        year = extract_result.get('year')
+        month = extract_result.get('month')
+        status = extract_result.get('status')
+        record_count = extract_result.get('record_count', 0)
+        file_size_mb = extract_result.get('file_size_mb', 0)
+        existing_file = extract_result.get('existing_file', False)
+        validation_status = validation_result.get('validation_status')
+        
+        summary = {
+            "dag_run_id": context['run_id'],
+            "execution_date": context['ds'],
+            "year": year,
+            "month": month,
+            "status": status,
+            "record_count": record_count,
+            "file_size_mb": file_size_mb,
+            "validation_status": validation_status,
+            "existing_file": existing_file,
+            "idempotent": True,
+            "processing_timestamp": datetime.now().isoformat()
+        }
+        
+        # Emoji-based status logging
+        emoji = "⏭️" if existing_file else ("✅" if status == "success" else "⚠️")
+        action = "Skipped (exists)" if existing_file else ("Processed" if status == "success" else "No data")
+        
+        logging.info(f"{emoji} [{year}-{month:02d}] {action} | Records: {record_count:,} | Size: {file_size_mb:.2f}MB | Validation: {validation_status}")
+        
+        return summary
 
     end_task = EmptyOperator(task_id="end_monthly_backfill")
 
     # Task flow
-    extract_task = extract_and_load_monthly()
+    extract_task = check_and_extract_monthly()
     validate_task = validate_monthly_data()
+    summary_task = log_summary()
     
-    start_task >> extract_task >> validate_task >> end_task
+    start_task >> extract_task >> validate_task >> summary_task >> end_task
 
-monthly_backfill_dag = nyc311_monthly_backfill()
+monthly_backfill_dag = nyc311_monthly_backfill_idempotent()

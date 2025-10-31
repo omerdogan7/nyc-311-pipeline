@@ -1,0 +1,104 @@
+version: 2
+
+models:
+  - name: fact_311
+    description: "Fact table for NYC 311 service requests"
+    config:
+      tags: ['fact', 'daily']
+      materialized: incremental
+      unique_key: unique_key
+    
+    columns:
+      # Primary Key
+      - name: unique_key
+        tests:
+          - unique
+          - not_null
+      
+      # Foreign Keys
+      - name: agency_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_agency')
+              field: agency_id
+              config:
+                where: "agency_key IS NOT NULL"
+      
+      - name: location_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_location')
+              field: location_id
+      
+      - name: complaint_type_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_complaint_type')
+              field: complaint_type_key
+      
+      - name: created_date_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+      
+      - name: closed_date_key
+        tests:
+          - relationships:
+              to: ref('dim_date')
+              field: date_key
+              config:
+                where: "closed_date_key IS NOT NULL"
+      
+      # Critical denormalized fields
+      - name: borough
+        tests:
+          - not_null
+      
+      - name: agency_code
+        tests:
+          - not_null
+      
+      - name: complaint_type
+        tests:
+          - not_null
+      
+      # Measures
+      - name: response_time_hours
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+              config:
+                where: "response_time_hours IS NOT NULL"
+      
+      - name: status
+        tests:
+          - not_null
+      
+      - name: is_closed
+        tests:
+          - not_null
+      
+      # Metadata
+      - name: _unified_processed_timestamp
+        tests:
+          - not_null
+      
+      - name: loaded_at
+        tests:
+          - not_null
+
+# Table-level tests
+tests:
+  - name: assert_closed_after_created
+    config:
+      severity: warn
+    sql: |
+      SELECT *
+      FROM {{ ref('fact_311') }}
+      WHERE closed_date_key IS NOT NULL
+        AND closed_date_key < created_date_key

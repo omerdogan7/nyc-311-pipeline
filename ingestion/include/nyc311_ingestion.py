@@ -1,8 +1,10 @@
 import requests
 import json
 import gzip
+import polars as pl
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
+from io import BytesIO
 import time
 import logging
 from airflow.models import Variable
@@ -91,17 +93,18 @@ class NYC311DataIngestion:
         logger.info(f"✅ [{context}] Total records fetched: {len(all_data)} in {request_count} requests")
         return all_data
 
-    def upload_to_s3(self, target_date: datetime, data: List[Dict], monthly: bool = False) -> Dict:
-        """Upload the data to S3 in compressed JSON format"""
+    def upload_to_s3_parquet(self, target_date: datetime, data: List[Dict], monthly: bool = False) -> Dict:
+        """Upload RAW data to S3 in Parquet format (Bronze layer - no transformations)"""
+        
         # Generate S3 key based on monthly/daily mode
         if monthly:
-            s3_key = f"year={target_date.year}/month={target_date.month:02d}/nyc_311_{target_date.year}_{target_date.month:02d}.json.gz"
+            s3_key = f"year={target_date.year}/month={target_date.month:02d}/nyc_311_{target_date.year}_{target_date.month:02d}.parquet"
             context = f"monthly-{target_date.year}-{target_date.month:02d}"
         else:
-            s3_key = f"year={target_date.year}/month={target_date.month:02d}/day={target_date.day:02d}/nyc_311_{target_date.strftime('%Y_%m_%d')}.json.gz"
+            s3_key = f"year={target_date.year}/month={target_date.month:02d}/day={target_date.day:02d}/nyc_311_{target_date.strftime('%Y_%m_%d')}.parquet"
             context = f"daily-{target_date.date()}"
 
-    # Handle empty data case
+        # Handle empty data case
         if not data:
             logger.info(f"⚠️ [{context}] No data to upload")
             return {
@@ -113,7 +116,88 @@ class NYC311DataIngestion:
             }
 
         try:
-        # Convert to JSON and compress
+            # Convert RAW JSON to Polars DataFrame (no transformations)
+            logger.info(f"🔄 [{context}] Converting {len(data):,} records to Parquet...")
+            df = pl.DataFrame(data)
+            
+            # Write to memory buffer
+            buffer = BytesIO()
+            df.write_parquet(
+                buffer,
+                compression='snappy',  # Fast compression
+                use_pyarrow=True
+            )
+            
+            # Get buffer data
+            buffer.seek(0)
+            parquet_data = buffer.getvalue()
+            file_size_mb = len(parquet_data) / (1024 * 1024)
+            
+            # Metadata for S3
+            metadata = {
+                'record_count': str(len(df)),
+                'column_count': str(len(df.columns)),
+                'ingestion_timestamp': datetime.now().isoformat(),
+                'source': 'nyc-opendata-api',
+                'format': 'parquet',
+                'compression': 'snappy',
+                'ingestion_type': 'monthly' if monthly else 'daily',
+                'layer': 'bronze',
+                'data_quality': 'raw',
+                'file_size_mb': str(round(file_size_mb, 2))
+            }
+            
+            # Upload to S3
+            s3_client = self.s3_hook.get_conn()
+            s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=s3_key,
+                Body=parquet_data,
+                Metadata=metadata,
+                ContentType='application/octet-stream'
+            )
+            
+            logger.info(f"📤 [{context}] Uploaded RAW Parquet to S3: {s3_key}")
+            logger.info(f"   Records: {len(df):,} | Columns: {len(df.columns)} | Size: {file_size_mb:.2f} MB")
+            
+            return {
+                "status": "success",
+                "s3_key": s3_key,
+                "record_count": len(df),
+                "column_count": len(df.columns),
+                "file_size_mb": round(file_size_mb, 2),
+                "format": "parquet",
+                "compression": "snappy",
+                "context": context
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ [{context}] Parquet upload failed: {e}")
+            raise
+
+    def upload_to_s3(self, target_date: datetime, data: List[Dict], monthly: bool = False) -> Dict:
+        """Upload the data to S3 in compressed JSON format (Legacy method)"""
+        # Generate S3 key based on monthly/daily mode
+        if monthly:
+            s3_key = f"year={target_date.year}/month={target_date.month:02d}/nyc_311_{target_date.year}_{target_date.month:02d}.json.gz"
+            context = f"monthly-{target_date.year}-{target_date.month:02d}"
+        else:
+            s3_key = f"year={target_date.year}/month={target_date.month:02d}/day={target_date.day:02d}/nyc_311_{target_date.strftime('%Y_%m_%d')}.json.gz"
+            context = f"daily-{target_date.date()}"
+
+        # Handle empty data case
+        if not data:
+            logger.info(f"⚠️ [{context}] No data to upload")
+            return {
+                "status": "no_data",
+                "s3_key": s3_key,
+                "record_count": 0,
+                "file_size_mb": 0,
+                "context": context
+            }
+
+        try:
+            # Convert to JSON and compress
             json_data = json.dumps(data, default=str, separators=(',', ':'))
             compressed_data = gzip.compress(json_data.encode('utf-8'))
             file_size_mb = len(compressed_data) / (1024 * 1024)
@@ -129,7 +213,7 @@ class NYC311DataIngestion:
                 'compressed_size_mb': str(round(file_size_mb, 2))
             }
 
-        # Use S3Hook's boto3 client directly to support metadata
+            # Use S3Hook's boto3 client directly to support metadata
             s3_client = self.s3_hook.get_conn()
             s3_client.put_object(
                 Bucket=self.bucket_name,
@@ -154,6 +238,7 @@ class NYC311DataIngestion:
         except Exception as e:
             logger.error(f"❌ [{context}] S3 upload failed: {e}")
             raise
+            
     def get_s3_file_info(self, s3_key: str) -> Optional[Dict]:
         """Get metadata information about an S3 file (useful for monitoring)"""
         try:
