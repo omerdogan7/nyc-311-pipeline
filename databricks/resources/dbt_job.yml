@@ -1,0 +1,38 @@
+resources:
+  jobs:
+    dbt_run_daily:
+      name: dbt_run_daily_${bundle.target}
+      
+      schedule:
+        quartz_cron_expression: 29 0 9 * * ?
+        timezone_id: America/New_York
+        pause_status: UNPAUSED
+      
+      tasks:
+        - task_key: dbt_run_daily
+          dbt_task:
+            project_directory: ${var.workspace_user_path}/.bundle/nyc_311_project/${bundle.target}/files/dbt_nyc_311/nyc_311_gold
+            commands:
+              - dbt deps
+              - dbt run
+            schema: gold
+            warehouse_id: ${var.warehouse_id}
+            catalog: ${var.catalog}
+            source: WORKSPACE
+          environment_key: dbt-default
+      
+      queue:
+        enabled: true
+      
+      environments:
+        - environment_key: dbt-default
+          spec:
+            dependencies:
+              - dbt-databricks>=1.0.0,<2.0.0
+            environment_version: "4"
+      
+      performance_target: PERFORMANCE_OPTIMIZED
+      
+      permissions:
+        - level: IS_OWNER
+          user_name: ${var.owner_email}

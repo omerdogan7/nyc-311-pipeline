@@ -2,64 +2,63 @@ version: 2
 
 models:
   - name: covid_impact_analysis
-    description: "COVID-19 impact on NYC 311 complaint patterns"
+    description: "Monthly COVID-19 impact analysis on NYC 311 complaints with volume, response time, and pattern shifts"
     columns:
       - name: year
+        description: "Year of the complaint data"
         tests:
           - not_null
       
       - name: month
+        description: "Month number (1-12)"
         tests:
           - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
       
       - name: covid_period
+        description: "COVID period classification"
         tests:
           - not_null
           - accepted_values:
               values: ['Pre-COVID', 'COVID Peak', 'Post-COVID']
       
       - name: total_complaints
+        description: "Total number of complaints in the period"
         tests:
           - not_null
+      
+      - name: closure_rate
+        description: "Percentage of complaints that were closed"
+        tests:
+          - not_null
+      
+      - name: avg_response_time_hours
+        description: "Average response time in hours (valid data only)"
+      
+      - name: same_day_closure_rate
+        description: "Percentage of complaints closed same day"
+      
+      - name: noise_complaints
+        description: "Count of noise-related complaints"
+        tests:
+          - not_null
+      
+      - name: transportation_complaints
+        description: "Count of transportation-related complaints"
+        tests:
+          - not_null
+      
+      - name: covid_phase
+        description: "Detailed COVID phase classification"
+        tests:
+          - accepted_values:
+              values: ['Baseline', 'Lockdown Phase', 'Early Recovery', 'Late Recovery', 'New Normal']
+      
+      - name: response_time_data_quality_pct
+        description: "Percentage of closed complaints with valid response time data"
       
       - name: created_at
-        tests:
-          - not_null
-
-  - name: holiday_pattern_analysis
-    description: "Holiday impact on complaint volume and types"
-    columns:
-      - name: nearest_holiday
-        tests:
-          - not_null
-      
-     
-  - name: response_time_trends
-    description: "Response time trends by agency and complaint type"
-    columns:
-      - name: year
-        tests:
-          - not_null
-      
-      - name: month
-        tests:
-          - not_null
-      
-      - name: agency_code
-        tests:
-          - not_null
-      
-      - name: avg_response_hours
-        tests:
-          - not_null
-
-  - name: geographic_hotspots
-    description: "Geographic complaint hotspots by borough and ZIP"
-    columns:
-      - name: borough
-        tests:
-          - not_null
-      
-      - name: total_complaints
+        description: "Timestamp when record was created"
         tests:
           - not_null

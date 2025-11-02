@@ -1,20 +1,28 @@
 bundle:
   name: nyc_311_pipeline
 
-# resources klasöründeki tüm .yml dosyalarını dahil et
 include:
   - resources/*.yml
+
 variables:
   # Catalog ayarları
   catalog:
     default: nyc_311
   
+  # Kullanıcı ayarları
+  owner_email:
+    default: omrdgn2212@gmail.com
+  
+  # Workspace path
+  workspace_user_path:
+    default: /Workspace/Users/omrdgn2212@gmail.com
+  
   # S3 bucket ayarları
   bronze_bucket:
-    default: s3://nyc-311-bronze  # Ortak bronze bucket
+    default: s3://nyc-311-bronze
   
   data_bucket:
-    default: s3://nyc-311-bronze  # Bu target'ta override edilecek
+    default: s3://nyc-311-bronze
   
   # Unity Catalog Volume paths
   bronze_volume_path:
@@ -35,8 +43,11 @@ variables:
   # Pipeline storage
   pipeline_storage_path:
     default: /Volumes/${var.catalog}/_bundle_storage/pipelines
+  
+  # Warehouse ID
+  warehouse_id:
+    default: ec36f24d39685e16
 
-# Ortamlar (Development ve Production)
 targets:
   dev:
     default: true
@@ -47,7 +58,8 @@ targets:
     
     variables:
       catalog: nyc_311_dev
-      data_bucket: s3://nyc-311-data-dev  # Dev için özel bucket
+      data_bucket: s3://nyc-311-data-dev
+      
   prod:
     mode: production
     workspace:
@@ -56,5 +68,6 @@ targets:
     
     variables:
       catalog: nyc_311_prod
-      data_bucket: s3://nyc-311-data-prod  # Prod için özel bucket
-    
+      data_bucket: s3://nyc-311-data-prod
+      # Prod'da farklı owner olabilir
+      # owner_email: prod-team@company.com

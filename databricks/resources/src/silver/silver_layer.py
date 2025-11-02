@@ -11,7 +11,7 @@ from functools import reduce
 # VIEW: Staging for Apply Changes
 # ========================================
 @dlt.view(
-    name="silver_311_staging",
+    name="silver.silver_311_staging",
     comment="Staging view for NYC 311 - transformation before SCD merge"
 )
 def silver_311_staging():
@@ -20,7 +20,7 @@ def silver_311_staging():
     Prepares data for SCD Type 1 apply_changes.
     """
     # ✅ SINGLE SOURCE READ
-    df = dlt.read_stream("nyc_311_dev.bronze.nyc_311_raw_v2")
+    df = dlt.read_stream("bronze.nyc_311_raw_v2")
     
     # ========================================
     # SECTION 1: BASE TRANSFORMATIONS 
@@ -485,9 +485,9 @@ def silver_311_staging():
 # APPLY CHANGES: SCD Type 1 Merge
 # ========================================
 dlt.create_streaming_table(
-    name="silver_311",
+    name="silver.silver_311",
     comment="NYC 311 Silver table with SCD Type 1 - Enhanced Borough Recovery (200+ Neighborhoods)",
-    
+   
     # ✅ PARTITION STRATEGY
     partition_cols=["created_year", "created_month"],
     
@@ -523,8 +523,8 @@ dlt.create_streaming_table(
 )
 
 dlt.apply_changes(
-    target="silver_311",
-    source="silver_311_staging",
+    target="silver.silver_311",
+    source="silver.silver_311_staging",
     keys=["unique_key"],
     sequence_by="updated_date",
     stored_as_scd_type=1,

@@ -61,7 +61,7 @@ on-run-end:
   - "{{ log('========================================', info=true) }}"
   - "{{ log('✅ NYC 311 Gold Layer Build Completed', info=true) }}"
   - "{% if results %}{{ log('✓ Success: ' ~ results | selectattr('status', 'equalto', 'success') | list | length ~ ' | ✗ Failed: ' ~ results | rejectattr('status', 'equalto', 'success') | list | length, info=true) }}{% endif %}"
-  - "{{ log('Finished at: ' ~ now().strftime('%Y-%m-%d %H:%M:%S'), info=true) }}"
+  - "{{ log('Finished at: ' ~ run_started_at.strftime('%Y-%m-%d %H:%M:%S'), info=true) }}"
   - "{{ log('========================================', info=true) }}"
 
 # ========================================
@@ -104,17 +104,7 @@ models:
           +materialized: table
           +tags: ["covid", "research", "analytics", "gold"]
           +post-hook: "{{ log('✓ COVID Impact Analysis completed', info=true) }}"
-        
-        holiday_pattern_analysis:
-          +materialized: table
-          +tags: ["holiday", "seasonal", "analytics", "gold"]
-          +post-hook: "{{ log('✓ Holiday Pattern Analysis completed', info=true) }}"
-        
-        seasonal_trends:
-          +materialized: table
-          +tags: ["seasonal", "trends", "analytics", "gold"]
-          +post-hook: "{{ log('✓ Seasonal Trends Analysis completed', info=true) }}"
-      
+           
       # ----------------------------------------
       # CORE - DIMENSIONS
       # ----------------------------------------
@@ -162,8 +152,7 @@ models:
             +materialized: incremental
             +unique_key: unique_key
             +incremental_strategy: merge
-            +merge_update_columns: all
-            +partition_by: ['created_year'] 
+            +partition_by: 'created_year' 
             +cluster_by: ['agency_code','created_month']
             +tags: ["fact", "high_volume", "core", "incremental", "gold"]
             +pre-hook: "{{ log('🔄 Loading fact_311 (watermark-based)', info=true) }}"
@@ -202,6 +191,12 @@ models:
             +unique_key: month_key
             +tags: ["aggregation", "monthly", "executive", "gold"]
             +pre-hook: "{{ log('🔄 Building agg_monthly_summary', info=true) }}"
+
+          agg_complaint_type_metrics:
+            +materialized: incremental
+            +unique_key: ["date_key", "complaint_type_key"]
+            +tags: ["aggregation", "metrics", "complaint", "dashboard", "daily", "gold"]
+            +pre-hook: "{{ log('🔄 Building agg_complaint_type_metrics', info=true) }}"
       
       # ----------------------------------------
       # ML FEATURES

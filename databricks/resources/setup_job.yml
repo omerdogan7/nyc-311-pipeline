@@ -11,13 +11,15 @@ resources:
               catalog: ${var.catalog}
               bronze_bucket: ${var.bronze_bucket}
               data_bucket: ${var.data_bucket}
-              
-      # Schedule yok, manuel çalıştırılacak
       
-    parameters:
+      parameters:
         - name: catalog
           default: ${var.catalog}
         - name: bronze_bucket  
           default: ${var.bronze_bucket}
         - name: data_bucket
-          default: ${var.data_bucket}     
+          default: ${var.data_bucket}
+      
+      permissions:
+        - level: IS_OWNER
+          user_name: ${var.owner_email}

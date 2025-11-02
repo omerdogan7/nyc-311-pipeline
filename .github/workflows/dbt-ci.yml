@@ -1,0 +1,62 @@
+name: dbt CI/CD
+
+on:
+  pull_request:
+    paths:
+      - 'dbt_nyc_311/**'
+
+concurrency:
+  group: dbt-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+      
+      - name: Install dbt
+        run: pip install dbt-databricks
+      
+      - name: Cache dbt packages
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.dbt
+            dbt_nyc_311/nyc_311_gold/dbt_packages
+          key: dbt-packages-${{ hashFiles('**/packages.yml') }}
+      
+      - name: Configure dbt profile
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          nyc_311_gold:
+            target: ci
+            outputs:
+              ci:
+                type: databricks
+                host: ${{ secrets.DATABRICKS_HOST }}
+                http_path: ${{ secrets.DBT_DATABRICKS_HTTP_PATH }}
+                token: ${{ secrets.DATABRICKS_TOKEN }}
+                schema: ci_testing
+                threads: 4
+          EOF
+      
+      - name: dbt deps
+        run: cd dbt_nyc_311/nyc_311_gold && dbt deps
+      
+      - name: dbt compile
+        run: cd dbt_nyc_311/nyc_311_gold && dbt compile

@@ -1,0 +1,25 @@
+resources:
+  jobs:
+    daily_refresh:
+      name: Daily_Refresh_${bundle.target}
+      
+      email_notifications:
+        on_failure:
+          - ${var.owner_email}
+        no_alert_for_skipped_runs: true
+      
+      schedule:
+        quartz_cron_expression: 27 0 7 * * ?
+        timezone_id: America/New_York
+        pause_status: UNPAUSED
+      
+      tasks:
+        - task_key: pipeline_refresh
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.nyc_311_pipeline.id}
+      
+      performance_target: PERFORMANCE_OPTIMIZED
+      
+      permissions:
+        - level: IS_OWNER
+          user_name: ${var.owner_email}

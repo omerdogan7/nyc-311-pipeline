@@ -4,7 +4,7 @@
     materialized='incremental',
     unique_key='unique_key',
     incremental_strategy='merge',
-    partition_by=['created_year'],
+    partition_by='created_year',
     cluster_by=['agency_code','created_month'],
     on_schema_change='fail',
     tags=['fact', 'daily']
