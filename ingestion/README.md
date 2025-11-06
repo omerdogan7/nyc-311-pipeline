@@ -1,13 +1,37 @@
-![Tech Stack Animation](/assets/apache_airflow.png)
+<img src="/assets/apache_airflow.png" alt="Apache Airflow" width="600">
+
+# NYC 311 Ingestion
+
+Apache Airflow orchestration for NYC 311 data ingestion to AWS S3 using Astronomer Astro CLI.
 
 [![Apache Airflow](https://img.shields.io/badge/Apache_Airflow-FF6B35?style=for-the-badge&logo=apacheairflow&logoColor=white)](https://airflow.apache.org)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![AWS S3](https://img.shields.io/badge/AWS_S3-569A31?style=for-the-badge&logo=amazons3&logoColor=white)](https://aws.amazon.com/s3/)
 
+## Table of Contents
 
-# NYC 311 Ingestion
-
-Apache Airflow orchestration for NYC 311 data ingestion to AWS S3 using Astronomer Astro CLI.
+- [Overview](#overview)
+- [Quick Start](#quick-start)
+- [Project Structure](#project-structure)
+- [DAGs](#dags)
+  - [1. Daily Ingestion](#1-daily-ingestion-nyc311_daily_ingestion)
+  - [2. Historical Backfill](#2-historical-backfill-nyc311_monthly_backfill_idempotent)
+- [How It Works](#how-it-works)
+  - [Data Extraction](#data-extraction)
+  - [Data Processing](#data-processing)
+  - [Idempotency](#idempotency)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Data Format](#data-format)
+  - [Parquet Schema](#parquet-schema)
+  - [S3 Metadata](#s3-metadata)
+  - [Partitioning Strategy](#partitioning-strategy)
+- [Monitoring](#monitoring)
+  - [Airflow UI](#airflow-ui)
+  - [Log Messages](#log-messages)
+- [Troubleshooting](#troubleshooting)
+- [Resources](#resources)
+- [License](#-license)
 
 ## Overview
 
@@ -223,4 +247,4 @@ MIT License
 ---
 
 **Version**: 1.0  
-**Last Updated**: November 2025  
+**Last Updated**: November 2025
