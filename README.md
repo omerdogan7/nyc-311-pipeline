@@ -231,7 +231,7 @@ dbt test
 Detailed README files for each layer:
 - [Ingestion Layer](ingestion/README.md) - Airflow DAGs and orchestration
 - [Databricks Processing](databricks/README.md) - Bronze & Silver layers
-- [dbt Transformations](dbt_nyc_311/README.md) - Gold layer models
+- [dbt Transformations](dbt/README.md) - Gold layer models
 
 ## Development Workflow
 
