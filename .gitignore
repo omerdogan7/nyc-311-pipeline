@@ -1,11 +1,35 @@
 # Python
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
 wheels/
-*.egg-info
-.venv
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
 
 # Terraform
 **/.terraform/*
@@ -15,7 +39,9 @@ wheels/
 *.tfstate.*
 *.tfstate.backup
 *.tfvars
+*.tfvars.json
 crash.log
+crash.*.log
 override.tf
 override.tf.json
 *_override.tf
@@ -23,36 +49,88 @@ override.tf.json
 .terraformrc
 terraform.rc
 
-# AWS / sensitive keys
+# AWS / Sensitive Keys
 *.pem
 *.key
 *.secret
 .aws/
+*.p12
+*.pfx
 
 # IDE
 .vscode/
 .idea/
 *.code-workspace
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
 
 # OS temp
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*~
 *.swp
+*.swo
 
 # Logs
 *.log
+logs/
 
 # Databricks
 .databricks/
+.databricks-sync.json
 
 # dbt - IMPORTANT: Never commit credentials!
 profiles.yml
 **/profiles.yml
+dbt/**/target/
+dbt/**/dbt_packages/
+dbt/**/logs/
+dbt/**/.user.yml
 dbt/target/
 dbt/dbt_packages/
 dbt/logs/
 dbt/.user.yml
 
+# Airflow
+airflow/logs/
+airflow/*.db
+airflow/*.pid
+airflow/*.cfg
+airflow/webserver_config.py
+airflow/airflow-webserver.pid
+airflow/scheduler.pid
+
 # Environment files
 .env
 .env.*
 *.env
+.envrc
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Documentation
+docs/_build/
+site/
+
+# Data files (optional)
+# *.csv
+# *.parquet
+# *.json
+# data/

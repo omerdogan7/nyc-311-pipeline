@@ -194,7 +194,7 @@ dbt run --select tag:incremental
 ## Data Models
 
 ### Core Models (Star Schema)
-
+![Tech Stack Animation](/assets/star_schema.gif)
 #### **Dimensions**
 
 | Model | Description | Rows (Est.) | Key | Refresh |
@@ -208,7 +208,7 @@ dbt run --select tag:incremental
 
 | Model | Description | Rows (Est.) | Grain | Strategy |
 |-------|-------------|-------------|-------|----------|
-| `fact_311` | All 311 complaints | ~30M+ | One row per complaint | Incremental (merge) |
+| `fact_311` | All 311 complaints | ~42M+ | One row per complaint | Incremental (merge) |
 
 **Fact Columns** (50+ total):
 - **Keys**: unique_key, agency_key, location_key, complaint_type_key, created_date_key, closed_date_key
