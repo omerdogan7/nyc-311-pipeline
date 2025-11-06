@@ -51,6 +51,7 @@ jobs:
                 host: ${{ secrets.DATABRICKS_HOST }}
                 http_path: ${{ secrets.DBT_DATABRICKS_HTTP_PATH }}
                 token: ${{ secrets.DATABRICKS_TOKEN }}
+                catalog: ${{ secrets.DBT_DATABRICKS_CATALOG }}
                 schema: ci_testing
                 threads: 4
           EOF
