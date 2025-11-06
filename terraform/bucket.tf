@@ -1,14 +1,3 @@
-# Bronze bucket - original ingested data
-resource "aws_s3_bucket" "nyc_311_bronze" {
-  bucket = "nyc-311-bronze"
-
-  tags = {
-    Name        = "NYC 311 Bronze"
-    Environment = "dev"
-    Project     = "NYC311 Ingestion"
-  }
-}
-
 # Raw bucket - external volume source
 resource "aws_s3_bucket" "nyc_311_raw" {
   bucket = "nyc-311-raw"

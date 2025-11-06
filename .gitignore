@@ -8,11 +8,20 @@ wheels/
 .venv
 
 # Terraform
+**/.terraform/*
+**/.terraform.lock.hcl
 .terraform/
 *.tfstate
+*.tfstate.*
 *.tfstate.backup
+*.tfvars
 crash.log
-terraform.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
 
 # AWS / sensitive keys
 *.pem
