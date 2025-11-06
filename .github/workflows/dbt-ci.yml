@@ -36,7 +36,7 @@ jobs:
         with:
           path: |
             ~/.dbt
-            dbt_nyc_311/nyc_311_gold/dbt_packages
+            dbt/nyc_311_gold/dbt_packages
           key: dbt-packages-${{ hashFiles('**/packages.yml') }}
       
       - name: Configure dbt profile
@@ -56,7 +56,7 @@ jobs:
           EOF
       
       - name: dbt deps
-        run: cd dbt_nyc_311/nyc_311_gold && dbt deps
+        run: cd dbt/nyc_311_gold && dbt deps
       
       - name: dbt compile
-        run: cd dbt_nyc_311/nyc_311_gold && dbt compile
+        run: cd dbt/nyc_311_gold && dbt compile
