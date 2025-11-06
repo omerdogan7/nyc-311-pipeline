@@ -11,7 +11,7 @@ from functools import reduce
 # VIEW: Staging for Apply Changes
 # ========================================
 @dlt.view(
-    name="silver.silver_311_staging",
+    name="silver_311_staging",
     comment="Staging view for NYC 311 - transformation before SCD merge"
 )
 def silver_311_staging():
@@ -20,7 +20,7 @@ def silver_311_staging():
     Prepares data for SCD Type 1 apply_changes.
     """
     # ✅ SINGLE SOURCE READ
-    df = dlt.read_stream("bronze.nyc_311_raw_v2")
+    df = dlt.read_stream("bronze.nyc_311_raw")
     
     # ========================================
     # SECTION 1: BASE TRANSFORMATIONS 
@@ -220,7 +220,7 @@ def silver_311_staging():
     # SECTION 2.1: FINAL BOROUGH ASSIGNMENT (3-Tier Hierarchy)
     # ========================================
     df = df.withColumn("borough",
-        # 1️⃣ PRIORITY: Keep original borough if valid (RAW DATA KORUNUYOR!)
+        # 1️⃣ PRIORITY: Keep original borough if valid 
         when(
             (col("borough").isNotNull()) & 
             (col("borough") != "") & 
@@ -230,7 +230,7 @@ def silver_311_staging():
             ])),
             upper(trim(col("borough")))
         )
-        # 2️⃣ RECOVERY: Sadece UNSPECIFIED için ZIP/City'den tahmin et
+        # 2️⃣ RECOVERY: for only UNSPECIFIED borough from ZIP/City
         .otherwise(
             coalesce(
                 col("borough_from_zip"),    # Priority 1: ZIP code (most reliable)
@@ -246,7 +246,7 @@ def silver_311_staging():
                       .otherwise(upper(trim(col("complaint_type")))))
     
     # ========================================
-    # SECTION 2.2: City alignment - GRANULAR DATA KORUYAN
+    # SECTION 2.2: City alignment - GRANULAR DATA PRESERVATION
     # ========================================
     # Temp column for cleaned city
     df = df.withColumn("city_temp", 
@@ -255,22 +255,22 @@ def silver_311_staging():
     )
 
     # Logic:
-    # 1. City NULL ise → Borough'dan doldur
-    # 2. City var + Borough UNSPECIFIED ise → City'yi KORU (mahalle bilgisi!)
-    # 3. City var + Borough biliniyor ise → Orijinal city'yi KORU
+    # 1. City NULL  → Fill from Borough
+    # 2. City exists + Borough UNSPECIFIED → KEEP City (neighborhood info!)
+    # 3. City exists + Borough known → KEEP original city
     df = df.withColumn("city",
         when(col("city_temp").isNull(),
-             # Scenario 1: City NULL → Borough'dan doldur
+             # Scenario 1: City NULL → Fill from Borough
              when(col("borough") == "MANHATTAN", "NEW YORK")
              .when(col("borough") == "BROOKLYN", "BROOKLYN") 
              .when(col("borough") == "QUEENS", "QUEENS")
              .when(col("borough") == "BRONX", "BRONX")
              .when(col("borough") == "STATEN ISLAND", "STATEN ISLAND")
              .otherwise("UNKNOWN"))
-        # Scenario 2: City var + Borough UNSPECIFIED → City'yi KORU
+        # Scenario 2: City exists + Borough UNSPECIFIED → KEEP City (neighborhood info!)
         .when(col("borough") == "UNSPECIFIED", 
               coalesce(col("city_temp"), lit("UNKNOWN")))
-        # Scenario 3: City var + Borough biliniyor → Orijinal city'yi KORU (WILLIAMSBURG, ASTORIA vb.)
+        # Scenario 3: City exists + Borough known → KEEP original city (WILLIAMSBURG, ASTORIA etc.)
         .otherwise(col("city_temp"))
     ).drop("city_temp")
     
@@ -480,14 +480,12 @@ def silver_311_staging():
     
     return df
 
-
 # ========================================
 # APPLY CHANGES: SCD Type 1 Merge
 # ========================================
 dlt.create_streaming_table(
     name="silver.silver_311",
     comment="NYC 311 Silver table with SCD Type 1 - Enhanced Borough Recovery (200+ Neighborhoods)",
-   
     # ✅ PARTITION STRATEGY
     partition_cols=["created_year", "created_month"],
     
@@ -524,199 +522,10 @@ dlt.create_streaming_table(
 
 dlt.apply_changes(
     target="silver.silver_311",
-    source="silver.silver_311_staging",
+    source="silver_311_staging",
     keys=["unique_key"],
     sequence_by="updated_date",
     stored_as_scd_type=1,
     ignore_null_updates=False
 )
 
-
-# ========================================
-# POST-PROCESSING OPTIMIZATION & VALIDATION
-# ========================================
-"""
-After initial full load (41M records), run these commands in SQL notebook:
-
--- 1. Z-ORDER optimization for query performance
-OPTIMIZE silver_311 ZORDER BY (agency, borough);
-
--- 2. Analyze table statistics
-ANALYZE TABLE silver_311 COMPUTE STATISTICS FOR ALL COLUMNS;
-
--- 3. Vacuum old files (after retention period)
-VACUUM silver_311 RETAIN 168 HOURS;
-
--- 4. Check table health
-DESCRIBE DETAIL silver_311;
-
--- 5. Verify granular city data preserved
-SELECT borough, COUNT(DISTINCT city) as unique_cities
-FROM silver_311
-GROUP BY borough
-ORDER BY borough;
-
--- 6. ✅ VALIDATE BOROUGH RECOVERY (NEW)
-SELECT 
-  'Before Enhancement' as phase,
-  565667 as unspecified_count,
-  ROUND(565667 * 100.0 / 41000000, 2) as unspecified_pct
-UNION ALL
-SELECT 
-  'After Enhancement' as phase,
-  SUM(CASE WHEN borough = 'UNSPECIFIED' THEN 1 END) as unspecified_count,
-  ROUND(SUM(CASE WHEN borough = 'UNSPECIFIED' THEN 1 END) * 100.0 / COUNT(*), 2) as unspecified_pct
-FROM silver_311;
-
--- Expected: UNSPECIFIED should drop from 565K to ~390K (31% reduction)
-
--- 7. ✅ Borough Recovery Breakdown by Source
-SELECT 
-  CASE 
-    WHEN incident_zip BETWEEN '10001' AND '10282' THEN 'Recovered_from_ZIP_Manhattan'
-    WHEN incident_zip BETWEEN '10451' AND '10475' THEN 'Recovered_from_ZIP_Bronx'
-    WHEN incident_zip BETWEEN '11201' AND '11256' THEN 'Recovered_from_ZIP_Brooklyn'
-    WHEN incident_zip BETWEEN '11004' AND '11697' THEN 'Recovered_from_ZIP_Queens'
-    WHEN incident_zip BETWEEN '10301' AND '10314' THEN 'Recovered_from_ZIP_StatenIsland'
-    ELSE 'Not_from_ZIP'
-  END as recovery_method,
-  borough,
-  COUNT(*) as count
-FROM silver_311
-WHERE borough != 'UNSPECIFIED'
-GROUP BY recovery_method, borough
-HAVING recovery_method LIKE 'Recovered%'
-ORDER BY count DESC;
-
--- 8. ✅ Validate closed_date inference
-SELECT 
-  agency,
-  COUNT(*) as total_closed,
-  SUM(CASE WHEN closed_date_source = 'ORIGINAL' THEN 1 END) as original,
-  SUM(CASE WHEN closed_date_source = 'INFERRED_FROM_RESOLUTION' THEN 1 END) as inferred,
-  SUM(CASE WHEN closed_date_source = 'MISSING' THEN 1 END) as still_missing,
-  ROUND(SUM(CASE WHEN closed_date_source = 'INFERRED_FROM_RESOLUTION' THEN 1 END) * 100.0 / COUNT(*), 2) as inference_pct
-FROM silver_311
-WHERE status LIKE 'CLOSED%'
-GROUP BY agency
-ORDER BY inferred DESC;
-
--- 9. ✅ Check for data quality anomalies
-SELECT 
-  status,
-  COUNT(*) as count,
-  SUM(CASE WHEN closed_date IS NOT NULL THEN 1 END) as has_closed_date
-FROM silver_311
-WHERE status IN ('OPEN', 'IN PROGRESS', 'PENDING')
-GROUP BY status;
--- Expected: has_closed_date should be 0 for all OPEN statuses
-
--- 10. ✅ Top 20 Neighborhoods that enabled borough recovery
-SELECT 
-  city,
-  borough,
-  COUNT(*) as recovered_count
-FROM silver_311
-WHERE city NOT IN ('NEW YORK', 'BROOKLYN', 'QUEENS', 'BRONX', 'STATEN ISLAND', 'UNKNOWN')
-  AND borough != 'UNSPECIFIED'
-GROUP BY city, borough
-ORDER BY recovered_count DESC
-LIMIT 20;
-
--- 11. ✅ Check invalid date partition
-SELECT COUNT(*) as invalid_date_records
-FROM silver_311
-WHERE created_year = 1900;
--- Expected: Should isolate records with NULL created_date
-
--- 12. ✅ Verify partition distribution
-SELECT 
-  created_year, 
-  COUNT(*) as record_count,
-  ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) as pct
-FROM silver_311
-GROUP BY created_year
-ORDER BY created_year;
-
--- 13. ✅ Borough Coverage Analysis (Before vs After)
-SELECT 
-  borough,
-  COUNT(*) as total_records,
-  ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) as pct,
-  SUM(CASE WHEN incident_zip IS NOT NULL THEN 1 END) as has_zip,
-  SUM(CASE WHEN city NOT IN ('NEW YORK', 'BROOKLYN', 'QUEENS', 'BRONX', 'STATEN ISLAND', 'UNKNOWN') THEN 1 END) as has_neighborhood
-FROM silver_311
-GROUP BY borough
-ORDER BY total_records DESC;
-
--- 14. ✅ Data Quality Summary Dashboard
-SELECT 
-  'Total Records' as metric,
-  COUNT(*) as value,
-  '100%' as percentage
-FROM silver_311
-UNION ALL
-SELECT 
-  'Has Valid Location' as metric,
-  SUM(CASE WHEN has_valid_location THEN 1 END) as value,
-  CONCAT(ROUND(SUM(CASE WHEN has_valid_location THEN 1 END) * 100.0 / COUNT(*), 2), '%') as percentage
-FROM silver_311
-UNION ALL
-SELECT 
-  'Has Valid ZIP' as metric,
-  SUM(CASE WHEN has_valid_zip THEN 1 END) as value,
-  CONCAT(ROUND(SUM(CASE WHEN has_valid_zip THEN 1 END) * 100.0 / COUNT(*), 2), '%') as percentage
-FROM silver_311
-UNION ALL
-SELECT 
-  'Borough Specified' as metric,
-  SUM(CASE WHEN borough != 'UNSPECIFIED' THEN 1 END) as value,
-  CONCAT(ROUND(SUM(CASE WHEN borough != 'UNSPECIFIED' THEN 1 END) * 100.0 / COUNT(*), 2), '%') as percentage
-FROM silver_311
-UNION ALL
-SELECT 
-  'Is Closed' as metric,
-  SUM(CASE WHEN is_closed THEN 1 END) as value,
-  CONCAT(ROUND(SUM(CASE WHEN is_closed THEN 1 END) * 100.0 / COUNT(*), 2), '%') as percentage
-FROM silver_311
-UNION ALL
-SELECT 
-  'Has Resolution' as metric,
-  SUM(CASE WHEN has_resolution THEN 1 END) as value,
-  CONCAT(ROUND(SUM(CASE WHEN has_resolution THEN 1 END) * 100.0 / COUNT(*), 2), '%') as percentage
-FROM silver_311;
-
--- 15. ✅ Agency-wise Borough Distribution
-SELECT 
-  agency,
-  SUM(CASE WHEN borough = 'MANHATTAN' THEN 1 END) as manhattan,
-  SUM(CASE WHEN borough = 'BROOKLYN' THEN 1 END) as brooklyn,
-  SUM(CASE WHEN borough = 'QUEENS' THEN 1 END) as queens,
-  SUM(CASE WHEN borough = 'BRONX' THEN 1 END) as bronx,
-  SUM(CASE WHEN borough = 'STATEN ISLAND' THEN 1 END) as staten_island,
-  SUM(CASE WHEN borough = 'UNSPECIFIED' THEN 1 END) as unspecified,
-  COUNT(*) as total
-FROM silver_311
-GROUP BY agency
-ORDER BY total DESC
-LIMIT 20;
-
-Expected results after optimization:
-✅ Borough Recovery:
-  - UNSPECIFIED: 565,667 → ~390,000 (31% reduction, ~175K recovered)
-  - ZIP-based recovery: ~100,000 records
-  - Neighborhood-based recovery: ~75,000 records
-  
-✅ Data Quality Improvements:
-  - Query performance: 10-100x faster with Z-ORDER
-  - File count: Optimized (fewer small files)
-  - Data skipping: Enabled for agency + borough
-  - Statistics: Current and accurate
-  
-✅ Enhanced Features:
-  - City distinct values: ~2,498 (granular neighborhood data preserved)
-  - DHS closed_date inference: 53,679 records fixed (99.88% improvement)
-  - OPEN cases with closed_date: 0 (data quality validated)
-  - Invalid date partition (1900): Isolated for better query pruning
-  - Borough coverage: Improved from 98.6% to 99.0%
-"""

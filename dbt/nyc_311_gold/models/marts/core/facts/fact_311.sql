@@ -1,4 +1,4 @@
--- 311 Complaints Fact Table (FIXED - Corrected Partitioning)
+-- 311 Complaints Fact Table with Partitioning and Clustering
 {{ 
   config(
     materialized='incremental',
@@ -10,11 +10,6 @@
     tags=['fact', 'daily']
   ) 
 }}
-
--- Alternative option if you NEED partitioning:
--- partition_by='date(created_date)', 
--- cluster_by=['borough', 'agency_key']
--- Note: This would require adding a created_date timestamp column
 
 {% if is_incremental() %}
     {% set max_timestamp_query %}
@@ -262,87 +257,3 @@ final as (
 
 select * from final
 
--- ========================================
--- POST-PROCESSING VALIDATION QUERIES
--- ========================================
-/*
-After initial load, run these validation queries:
-
--- 1. Check NULL foreign keys (should be 0 or minimal)
-SELECT 
-  'agency_key' as fk_name,
-  COUNT(*) as null_count,
-  ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM {{ this }}), 4) as null_pct
-FROM {{ this }}
-WHERE agency_key IS NULL
-UNION ALL
-SELECT 
-  'location_key',
-  COUNT(*),
-  ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM {{ this }}), 4)
-FROM {{ this }}
-WHERE location_key IS NULL
-UNION ALL
-SELECT 
-  'complaint_type_key',
-  COUNT(*),
-  ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM {{ this }}), 4)
-FROM {{ this }}
-WHERE complaint_type_key IS NULL;
-
--- 2. Check date key validity
-SELECT 
-  COUNT(*) as invalid_date_keys
-FROM {{ this }}
-WHERE created_date_key < 20100101 OR created_date_key > 20301231;
-
--- 3. Borough distribution validation
-SELECT 
-  borough,
-  COUNT(*) as count,
-  ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) as pct
-FROM {{ this }}
-GROUP BY borough
-ORDER BY count DESC;
-
--- 4. Incremental load validation (run after 2nd load)
-SELECT 
-  date(loaded_at) as load_date,
-  COUNT(*) as records_loaded,
-  MIN(_unified_processed_timestamp) as earliest_record,
-  MAX(_unified_processed_timestamp) as latest_record
-FROM {{ this }}
-GROUP BY date(loaded_at)
-ORDER BY load_date DESC;
-
--- 5. Response time metrics validation
-SELECT 
-  agency_code,
-  COUNT(*) as total_closed,
-  ROUND(AVG(response_time_hours), 2) as avg_hours,
-  ROUND(AVG(response_time_days), 2) as avg_days,
-  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY response_time_days) as median_days
-FROM {{ this }}
-WHERE is_closed = true
-GROUP BY agency_code
-ORDER BY total_closed DESC
-LIMIT 10;
-
--- 6. Data quality summary
-SELECT 
-  'Total Records' as metric,
-  COUNT(*) as value
-FROM {{ this }}
-UNION ALL
-SELECT 'Has Location Key', COUNT(*) FROM {{ this }} WHERE location_key IS NOT NULL
-UNION ALL
-SELECT 'Has Agency Key', COUNT(*) FROM {{ this }} WHERE agency_key IS NOT NULL
-UNION ALL
-SELECT 'Has Complaint Key', COUNT(*) FROM {{ this }} WHERE complaint_type_key IS NOT NULL
-UNION ALL
-SELECT 'Has Valid Coordinates', COUNT(*) FROM {{ this }} WHERE has_valid_location = true
-UNION ALL
-SELECT 'Closed Cases', COUNT(*) FROM {{ this }} WHERE is_closed = true
-UNION ALL
-SELECT 'Has Resolution', COUNT(*) FROM {{ this }} WHERE has_resolution = true;
-*/

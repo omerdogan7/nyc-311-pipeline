@@ -18,10 +18,10 @@ class NYC311DataIngestion:
     def __init__(self):
         self.base_url = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
         self.limit = 50000
-        self.bucket_name = Variable.get("nyc_311_bucket", default_var="nyc-311-bronze")
+        self.bucket_name = Variable.get("nyc_311_bucket", default_var="nyc-311-raw")
         self.s3_hook = S3Hook(aws_conn_id='aws_default')
         # Optional: Configurable rate limiting
-        self.request_delay = float(Variable.get("nyc_311_request_delay", default_var="0.2"))
+        self.request_delay = 0.2  # seconds between requests
         
     def check_file_exists(self, s3_key: str) -> bool:
         """Check if the file already exists in S3"""

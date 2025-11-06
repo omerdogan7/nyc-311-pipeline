@@ -3,7 +3,7 @@ name: dbt CI/CD
 on:
   pull_request:
     paths:
-      - 'dbt_nyc_311/**'
+      - 'dbt/**'
 
 concurrency:
   group: dbt-ci-${{ github.ref }}

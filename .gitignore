@@ -32,6 +32,18 @@ terraform.tfvars
 # Logs
 *.log
 
-.databricks
+# Databricks
+.databricks/
 
-.databricks
+# dbt - IMPORTANT: Never commit credentials!
+profiles.yml
+**/profiles.yml
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/.user.yml
+
+# Environment files
+.env
+.env.*
+*.env

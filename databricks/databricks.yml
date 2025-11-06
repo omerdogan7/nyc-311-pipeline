@@ -5,11 +5,11 @@ include:
   - resources/*.yml
 
 variables:
-  # Catalog ayarları
+  # Catalog settings
   catalog:
     default: nyc_311
   
-  # Kullanıcı ayarları
+  # Kullanıcı settings
   owner_email:
     default: omrdgn2212@gmail.com
   
@@ -17,7 +17,7 @@ variables:
   workspace_user_path:
     default: /Workspace/Users/omrdgn2212@gmail.com
   
-  # S3 bucket ayarları
+  # S3 bucket settings
   bronze_bucket:
     default: s3://nyc-311-bronze
   
@@ -54,7 +54,7 @@ targets:
     mode: development
     workspace:
       host: https://dbc-0d4418ed-daed.cloud.databricks.com
-      profile: marvelous
+      profile: DEFAULT
     
     variables:
       catalog: nyc_311_dev
@@ -64,10 +64,9 @@ targets:
     mode: production
     workspace:
       host: https://dbc-0d4418ed-daed.cloud.databricks.com
-      profile: marvelous
+      profile: DEFAULT
     
     variables:
       catalog: nyc_311_prod
       data_bucket: s3://nyc-311-data-prod
-      # Prod'da farklı owner olabilir
-      # owner_email: prod-team@company.com
+      

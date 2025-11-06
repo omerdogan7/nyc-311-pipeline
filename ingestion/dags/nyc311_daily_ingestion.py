@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from include.nyc311_ingestion import NYC311DataIngestion
 from airflow.operators.empty import EmptyOperator
 import logging
-
+# DAG default configuration value
 default_args = {
     "owner": "data-engineering",
     "depends_on_past": False,
@@ -58,7 +58,7 @@ def nyc311_daily_ingestion():
             }
         
         ingestion = NYC311DataIngestion()
-        # Parquet dosya yolu
+        # Parquet file path
         s3_key = f"year={execution_date_obj.year}/month={execution_date_obj.month:02d}/day={execution_date_obj.day:02d}/nyc_311_{execution_date_obj.strftime('%Y_%m_%d')}.parquet"
 
         # Check if already exists

@@ -226,8 +226,6 @@ models:
 tests:
   nyc_311_gold:
     +store_failures: false
-    +store_failures_as: table
-    +schema: test_results
     +severity: warn
     
     # Critical tests - error severity

@@ -2,7 +2,7 @@ import dlt
 from pyspark.sql.functions import current_timestamp, col
 from pyspark.sql.types import *
 
-# Düzeltilmiş Schema - Raw data'daki 41 kolonun tam kopyası
+# Schema definition for NYC 311 data
 nyc_311_schema = StructType([
     # Core Fields
     StructField("unique_key", StringType(), True),
@@ -37,12 +37,12 @@ nyc_311_schema = StructType([
     StructField("community_board", StringType(), True),
     StructField("bbl", StringType(), True),
     StructField("borough", StringType(), True),
-    StructField("x_coordinate_state_plane", StringType(), True),  # String (raw data'da string)
-    StructField("y_coordinate_state_plane", StringType(), True),  # String (raw data'da string)
-    StructField("latitude", StringType(), True),                  # String (raw data'da string)
-    StructField("longitude", StringType(), True),                 # String (raw data'da string)
+    StructField("x_coordinate_state_plane", StringType(), True),
+    StructField("y_coordinate_state_plane", StringType(), True),
+    StructField("latitude", StringType(), True),
+    StructField("longitude", StringType(), True),
     
-    # Location - Nested Struct (raw data'daki gibi)
+    # Location - Nested Struct
     StructField("location", StructType([
         StructField("human_address", StringType(), True),
         StructField("latitude", StringType(), True),
@@ -62,13 +62,9 @@ nyc_311_schema = StructType([
     StructField("bridge_highway_segment", StringType(), True)
 ])
 
-# Catalog ve Schema ayarları
-catalog = spark.conf.get("pipeline.catalog", "nyc_311_dev")
-bronze_schema = "bronze"
-
 @dlt.table(
-    name="nyc_311_raw_v2",
-    comment="Raw NYC 311 data from S3 - 41 raw columns + 4 metadata columns for provenance",
+    name="nyc_311_raw",
+    comment="Raw NYC 311 data from External Volume - 42 raw columns + 4 metadata columns",
     table_properties={
         "quality": "bronze",
         "delta.enableChangeDataFeed": "true"
@@ -76,33 +72,41 @@ bronze_schema = "bronze"
 )
 def bronze_nyc_311_raw():
     """
-    Pure bronze layer with forward-compatible schema:
+    Bronze layer reading from Unity Catalog External Volume
+    
+    Source: /Volumes/nyc_311_dev/bronze/raw_files/
+    → Points to: s3://nyc-311-raw/
     
     Raw Data (41 columns):
-    - Schema covers all 41 columns from 2025 data
-    - 2010 data (31 columns) will have 10 NULL columns automatically
+    - Schema covers all 42 columns from 2025 data
+    - 2010 data (31 columns) will have 11 NULL columns automatically
     - schemaEvolutionMode handles future new columns
     
     Metadata Added (4 columns):
     - _ingested_at: When this record was ingested into Bronze
-    - _source_file: Which S3 file this record came from
+    - _source_file: Which file this record came from
     - _file_modification_time: When the source file was last modified
     - _file_size: Size of the source file in bytes
     
     NO transformations, NO filtering, NO dropping records.
     All data quality checks happen in Silver layer.
     """
+    
+    # Read from External Volume (Unity Catalog managed path)
+    source_path = "/Volumes/nyc_311_dev/bronze/raw_files/"
+    
     df = (
         spark.readStream
         .format("cloudFiles")
         .option("cloudFiles.format", "parquet")
+        .option("cloudFiles.schemaLocation", "/Volumes/nyc_311_dev/bronze/checkpoints/schema")
         .option("cloudFiles.schemaEvolutionMode", "addNewColumns")
         .option("cloudFiles.rescuedDataColumn", "_rescued_data")
         .option("cloudFiles.includeExistingFiles", "true")
         .option("pathGlobFilter", "*.parquet")
         .option("recursiveFileLookup", "true")
         .option("cloudFiles.maxFilesPerTrigger", "100")
-        .load("s3://nyc-311-bronze/")
+        .load(source_path)  # ← External Volume path
     )
     
     # Add provenance metadata for lineage and debugging

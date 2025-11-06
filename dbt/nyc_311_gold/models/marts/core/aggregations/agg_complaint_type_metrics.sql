@@ -89,27 +89,3 @@ daily_complaint_metrics AS (
 SELECT * FROM daily_complaint_metrics
 ORDER BY date_key DESC, total_complaints DESC
 
-/*
-✅ KEY FEATURES:
-================
-1. Daily granularity - complaint type metrics
-2. Incremental updates (7 day lookback)
-3. Response time metrics per complaint type
-4. Top agency/borough context
-5. Ready for dashboard TOP 10 queries
-
-USAGE:
-======
--- Top 10 complaint types (last 30 days)
-SELECT 
-    complaint_type,
-    complaint_category,
-    SUM(total_complaints) as total,
-    AVG(avg_response_time_hours) as avg_response_hrs,
-    most_common_agency
-FROM agg_complaint_type_metrics
-WHERE date_key >= CAST(date_format(date_sub(current_date(), 30), 'yyyyMMdd') AS int)
-GROUP BY complaint_type, complaint_category, most_common_agency
-ORDER BY total DESC
-LIMIT 10
-*/

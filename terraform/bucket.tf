@@ -1,4 +1,4 @@
-# Mevcut bronze bucket
+# Bronze bucket - original ingested data
 resource "aws_s3_bucket" "nyc_311_bronze" {
   bucket = "nyc-311-bronze"
 
@@ -9,7 +9,18 @@ resource "aws_s3_bucket" "nyc_311_bronze" {
   }
 }
 
-# Yeni Dev bucket
+# Raw bucket - external volume source
+resource "aws_s3_bucket" "nyc_311_raw" {
+  bucket = "nyc-311-raw"
+
+  tags = {
+    Name        = "NYC 311 Raw"
+    Environment = "dev"
+    Project     = "NYC311 Pipeline"
+  }
+}
+
+# Dev bucket - managed tables
 resource "aws_s3_bucket" "nyc_311_data_dev" {
   bucket = "nyc-311-data-dev"
 
@@ -20,7 +31,7 @@ resource "aws_s3_bucket" "nyc_311_data_dev" {
   }
 }
 
-# Yeni Prod bucket
+# Prod bucket - managed tables
 resource "aws_s3_bucket" "nyc_311_data_prod" {
   bucket = "nyc-311-data-prod"
 

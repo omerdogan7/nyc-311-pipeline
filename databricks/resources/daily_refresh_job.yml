@@ -1,7 +1,7 @@
 resources:
   jobs:
     daily_refresh:
-      name: Daily_Refresh_${bundle.target}
+      name: daily_refresh_${bundle.target}
       
       email_notifications:
         on_failure:

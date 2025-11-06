@@ -1,6 +1,6 @@
 """
 NYC 311 Ingestion - Minimal Critical Tests
-Senin çalışan import yapına göre düzenlenmiş versiyon.
+Version adapted to your working import structure.
 """
 
 import boto3
@@ -33,7 +33,7 @@ def ingestion():
         ing.bucket_name = BUCKET
         ing.request_delay = 0
         
-        # Mock S3Hook (senin FakeS3Hook yapına benzer)
+        # Mock S3Hook (similar to your FakeS3Hook structure)
         class MockS3Hook:
             def check_for_key(self, key, bucket_name):
                 try:
@@ -63,7 +63,7 @@ def ingestion():
 # ==================== CRITICAL TESTS ====================
 
 def test_idempotency_check(ingestion):
-    """🔥 EN ÖNEMLİ: Dosya varsa skip etmeli (DAG'ın kalbi)"""
+    """🔥 MOST IMPORTANT: Skip processing if file exists (Heart of DAG)"""
     key = "year=2024/month=03/nyc_311_2024_03.parquet"
     
     # File doesn't exist
@@ -81,14 +81,14 @@ def test_idempotency_check(ingestion):
     # Now file exists (idempotency check should return True)
     assert ingestion.check_file_exists(key) is True
     
-    # Get metadata (DAG bunu kullanıyor)
+    # Get metadata (DAG uses this)
     info = ingestion.get_s3_file_info(key)
     assert info["metadata"]["record_count"] == "100000"
 
 
 def test_parquet_upload_success(ingestion):
-    """🔥 Parquet upload çalışıyor mu? (DAG upload_to_s3_parquet kullanıyor)"""
-    # Daha gerçekçi veri (file_size_mb > 0 olması için)
+    """🔥 Does Parquet upload work? (DAG uses upload_to_s3_parquet)"""
+    # More realistic data (to ensure file_size_mb > 0)
     data = [
         {
             "unique_key": str(i),
@@ -106,13 +106,13 @@ def test_parquet_upload_success(ingestion):
         monthly=True
     )
     
-    # Check result structure (DAG bunu XCom'da kullanıyor)
+    # Check result structure (DAG uses this in XCom)
     assert result["status"] == "success"
     assert result["record_count"] == 100
     assert result["format"] == "parquet"
     assert result["compression"] == "snappy"
     assert result["s3_key"] == "year=2024/month=03/nyc_311_2024_03.parquet"
-    assert result["file_size_mb"] >= 0  # Küçük veri için 0.0 olabilir
+    assert result["file_size_mb"] >= 0  # Can be 0.0 for small data
     
     # Verify S3 upload
     s3 = ingestion.s3_hook.get_conn()
@@ -121,9 +121,9 @@ def test_parquet_upload_success(ingestion):
 
 
 def test_api_pagination(ingestion):
-    """🔥 Pagination doğru çalışıyor mu? (50K+ kayıt varsa)"""
+    """🔥 Does pagination work correctly? (for 50K+ records)"""
     with requests_mock.Mocker() as m:
-        # Mock: 2 sayfa veri (senin regex pattern yapın)
+        # Mock: 2 pages of data (using your regex pattern)
         base_url_pattern = re.compile(r"https://data\.cityofnewyork\.us/resource/erm2-nwe9\.json.*")
         
         page1 = [{"unique_key": str(i)} for i in range(50000)]
@@ -156,21 +156,21 @@ def test_api_pagination(ingestion):
 
 
 def test_empty_data_handling(ingestion):
-    """🔥 Veri yoksa hata vermemeli (validation_monthly_data için)"""
+    """🔥 Should not error when no data exists (for validation_monthly_data)"""
     result = ingestion.upload_to_s3_parquet(
         datetime(2024, 3, 15),
         [],  # Empty data
         monthly=True
     )
     
-    # DAG'daki validation bu değerleri kontrol ediyor
+    # DAG validation checks these values
     assert result["status"] == "no_data"
     assert result["record_count"] == 0
     assert result["file_size_mb"] == 0
 
 
 def test_december_edge_case(ingestion):
-    """🔥 Aralık ayı yıl rollover'ı (fetch_data_for_month'taki if month == 12)"""
+    """🔥 December year rollover (if month == 12 in fetch_data_for_month)"""
     with requests_mock.Mocker() as m:
         base_url_pattern = re.compile(r"https://data\.cityofnewyork\.us/resource/erm2-nwe9\.json.*")
         
@@ -199,7 +199,7 @@ def test_december_edge_case(ingestion):
 # ==================== OPTIONAL TESTS ====================
 
 def test_daily_vs_monthly_s3_key(ingestion):
-    """Key structure farklı mı? (monthly=True/False)"""
+    """Are key structures different? (monthly=True/False)"""
     data = [{"unique_key": "1"}]
     
     # Monthly key
@@ -218,7 +218,7 @@ def test_daily_vs_monthly_s3_key(ingestion):
 
 
 def test_metadata_stored_correctly(ingestion):
-    """Metadata S3'e doğru kaydediliyor mu? (DAG log_summary için)"""
+    """Is metadata stored correctly in S3? (for DAG log_summary)"""
     data = [{"unique_key": str(i)} for i in range(100)]
     
     result = ingestion.upload_to_s3_parquet(
@@ -229,7 +229,7 @@ def test_metadata_stored_correctly(ingestion):
     
     info = ingestion.get_s3_file_info(result["s3_key"])
     
-    # DAG'daki validation bu metadata'yı kullanıyor
+    # DAG validation uses this metadata
     assert info["metadata"]["record_count"] == "100"
     assert info["metadata"]["layer"] == "bronze"
     assert info["metadata"]["format"] == "parquet"
@@ -237,7 +237,7 @@ def test_metadata_stored_correctly(ingestion):
 
 
 def test_validate_date_range(ingestion):
-    """Date validation çalışıyor mu? (class'taki validate_date_range metodu)"""
+    """Does date validation work? (validate_date_range method in class)"""
     # Valid range
     start = datetime(2024, 1, 1)
     end = datetime(2024, 1, 15)

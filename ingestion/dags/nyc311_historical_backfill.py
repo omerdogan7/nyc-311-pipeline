@@ -182,7 +182,7 @@ def nyc311_monthly_backfill_idempotent():
             "processing_timestamp": datetime.now().isoformat()
         }
         
-        # Emoji-based status logging
+        # Status logging
         emoji = "⏭️" if existing_file else ("✅" if status == "success" else "⚠️")
         action = "Skipped (exists)" if existing_file else ("Processed" if status == "success" else "No data")
         

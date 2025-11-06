@@ -4,20 +4,24 @@ resources:
       name: nyc_311_pipeline_${bundle.target}
       catalog: ${var.catalog}
       schema: bronze      
-            
       
       serverless: true
       
       configuration:
-        pipeline.catalog: ${var.catalog}
-        pipeline.bronze_bucket: ${var.bronze_bucket}
-        pipeline.data_bucket: ${var.data_bucket}
-        pipelines.autoCreateManagedSchema: "true"
         
+        bundle.catalog: ${var.catalog}
+        bundle.bronze_bucket: ${var.bronze_bucket}
+        bundle.data_bucket: ${var.data_bucket}
+        bundle.bronze_volume_path: ${var.bronze_volume_path}
+        bundle.silver_volume_path: ${var.silver_volume_path}
+        bundle.gold_volume_path: ${var.gold_volume_path}
+        
+        # DLT settings
+        pipelines.autoCreateManagedSchema: "true"
+
+        spark.databricks.unityCatalog.checkPathOverlap: "false"
 
       libraries:
-        - notebook:
-            path: ./src/setup/setup_catalog.py
         - file:
             path: ./src/bronze/bronze_layer.py
         - file:
@@ -25,5 +29,3 @@ resources:
       
       continuous: false
       development: true
-
-     

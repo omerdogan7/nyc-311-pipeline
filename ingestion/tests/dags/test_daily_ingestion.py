@@ -1,6 +1,6 @@
 """
 NYC 311 Daily Ingestion - Critical Tests
-Daily DAG için monthly test yapısına göre uyarlanmış.
+Adapted from monthly test structure for daily DAG.
 """
 
 import boto3
@@ -63,7 +63,7 @@ def ingestion():
 # ==================== CRITICAL TESTS ====================
 
 def test_idempotency_check_daily(ingestion):
-    """🔥 EN ÖNEMLİ: Dosya varsa skip etmeli (Daily DAG'ın kalbi)"""
+    """🔥 MOST IMPORTANT: Skip processing if file exists (Heart of Daily DAG)"""
     key = "year=2025/month=10/day=01/nyc_311_2025_10_01.parquet"
     
     # File doesn't exist
@@ -81,14 +81,14 @@ def test_idempotency_check_daily(ingestion):
     # Now file exists (idempotency check should return True)
     assert ingestion.check_file_exists(key) is True
     
-    # Get metadata (DAG bunu kullanıyor)
+    # Get metadata (DAG uses this)
     info = ingestion.get_s3_file_info(key)
     assert info["metadata"]["record_count"] == "5000"
 
 
 def test_parquet_upload_success_daily(ingestion):
-    """🔥 Daily Parquet upload çalışıyor mu?"""
-    # Günlük gerçekçi veri
+    """🔥 Does daily Parquet upload work correctly?"""
+    # Realistic daily data
     data = [
         {
             "unique_key": str(i),
@@ -106,7 +106,7 @@ def test_parquet_upload_success_daily(ingestion):
         monthly=False  # 🔥 DAILY MODE
     )
     
-    # Check result structure (DAG XCom'da kullanıyor)
+    # Check result structure (DAG uses this in XCom)
     assert result["status"] == "success"
     assert result["record_count"] == 100
     assert result["format"] == "parquet"
@@ -122,7 +122,7 @@ def test_parquet_upload_success_daily(ingestion):
 
 
 def test_api_fetch_single_day(ingestion):
-    """🔥 Tek günlük veri çekimi (fetch_data_for_date)"""
+    """🔥 Single day data fetch (fetch_data_for_date)"""
     with requests_mock.Mocker() as m:
         base_url_pattern = re.compile(r"https://data\.cityofnewyork\.us/resource/erm2-nwe9\.json.*")
         
@@ -154,21 +154,21 @@ def test_api_fetch_single_day(ingestion):
 
 
 def test_empty_data_handling_daily(ingestion):
-    """🔥 Günlük veri yoksa hata vermemeli (validation için)"""
+    """🔥 Should not error when no daily data exists (for validation)"""
     result = ingestion.upload_to_s3_parquet(
         datetime(2025, 10, 1),
         [],  # Empty data
         monthly=False
     )
     
-    # DAG'daki validation bu değerleri kontrol ediyor
+    # DAG validation checks these values
     assert result["status"] == "no_data"
     assert result["record_count"] == 0
     assert result["file_size_mb"] == 0
 
 
 def test_daily_s3_key_structure(ingestion):
-    """🔥 Daily key structure doğru mu? (year/month/day)"""
+    """🔥 Is daily key structure correct? (year/month/day)"""
     data = [{"unique_key": "1"}]
     
     # Daily key must have day folder
@@ -186,7 +186,7 @@ def test_daily_s3_key_structure(ingestion):
 
 
 def test_metadata_stored_correctly_daily(ingestion):
-    """🔥 Daily metadata S3'e doğru kaydediliyor mu?"""
+    """🔥 Is daily metadata stored correctly in S3?"""
     data = [{"unique_key": str(i)} for i in range(100)]
     
     result = ingestion.upload_to_s3_parquet(
@@ -197,7 +197,7 @@ def test_metadata_stored_correctly_daily(ingestion):
     
     info = ingestion.get_s3_file_info(result["s3_key"])
     
-    # DAG validation bu metadata'yı kullanıyor
+    # DAG validation uses this metadata
     assert info["metadata"]["record_count"] == "100"
     assert info["metadata"]["layer"] == "bronze"
     assert info["metadata"]["format"] == "parquet"
@@ -206,7 +206,7 @@ def test_metadata_stored_correctly_daily(ingestion):
 
 
 def test_future_date_skip(ingestion):
-    """🔥 Gelecek tarih skip edilmeli (DAG'daki skip logic)"""
+    """🔥 Future dates should be skipped (DAG skip logic)"""
     future_date = datetime.now() + timedelta(days=5)
     
     # Validation should prevent this
@@ -216,7 +216,7 @@ def test_future_date_skip(ingestion):
 
 
 def test_multiple_daily_runs(ingestion):
-    """🔥 Ardışık günlük çalıştırmalar (catchup=True için)"""
+    """🔥 Consecutive daily runs (for catchup=True)"""
     dates = [
         datetime(2025, 10, 1),
         datetime(2025, 10, 2),
@@ -242,14 +242,14 @@ def dagbag():
 
 
 def test_dag_loaded(dagbag):
-    """🔥 DAG yükleniyor mu?"""
+    """🔥 Is DAG loaded successfully?"""
     dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
     assert dag is not None
     assert len(dag.tasks) > 0
 
 
 def test_dag_tasks_exist(dagbag):
-    """🔥 Tüm task'lar var mı?"""
+    """🔥 Do all required tasks exist?"""
     dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
     task_ids = [task.task_id for task in dag.tasks]
     
@@ -261,7 +261,7 @@ def test_dag_tasks_exist(dagbag):
 
 
 def test_dag_schedule(dagbag):
-    """🔥 Schedule doğru mu? (9 AM UTC daily)"""
+    """🔥 Is schedule correct? (9 AM UTC daily)"""
     dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
     # Airflow 2.x uses 'schedule' or 'timetable' instead of 'schedule_interval'
     schedule = getattr(dag, 'schedule', None) or getattr(dag, 'schedule_interval', None)
@@ -269,20 +269,20 @@ def test_dag_schedule(dagbag):
 
 
 def test_dag_start_date(dagbag):
-    """🔥 Start date 1 Ekim 2025 mi?"""
+    """🔥 Is start date October 1, 2025?"""
     dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
     # Compare dates only (ignore timezone differences)
     assert dag.start_date.date() == datetime(2025, 10, 1).date()
 
 
 def test_dag_catchup_enabled(dagbag):
-    """🔥 Catchup enabled mı? (geçmiş günleri çekmek için)"""
+    """🔥 Is catchup enabled? (for backfilling past days)"""
     dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
     assert dag.catchup is True
 
 
 def test_task_dependencies(dagbag):
-    """🔥 Task dependency chain doğru mu?"""
+    """🔥 Is task dependency chain correct?"""
     dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
     
     start = dag.get_task("start_daily_ingestion")
