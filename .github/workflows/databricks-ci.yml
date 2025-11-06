@@ -30,7 +30,6 @@ jobs:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: |
-          mkdir -p ~/.databrickscfg
           cat > ~/.databrickscfg << EOF
           [DEFAULT]
           host = $DATABRICKS_HOST
@@ -60,7 +59,6 @@ jobs:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: |
-          mkdir -p ~/.databrickscfg
           cat > ~/.databrickscfg << EOF
           [DEFAULT]
           host = $DATABRICKS_HOST
