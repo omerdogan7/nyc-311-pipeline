@@ -725,5 +725,3 @@ Contributions are welcome! Please follow these steps:
 [⬆ Back to Top](#nyc-311-data-lakehouse-pipeline)
 
 </div>
-
-"test: dbt CI/CD workflow"
