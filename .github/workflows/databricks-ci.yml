@@ -25,10 +25,19 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
       
-      - name: Validate Bundle
+      - name: Configure Databricks CLI
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: |
+          mkdir -p ~/.databrickscfg
+          cat > ~/.databrickscfg << EOF
+          [DEFAULT]
+          host = $DATABRICKS_HOST
+          token = $DATABRICKS_TOKEN
+          EOF
+      
+      - name: Validate Bundle
         run: |
           cd databricks
           databricks bundle validate
@@ -46,11 +55,19 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
       
-      - name: Deploy to DEV
+      - name: Configure Databricks CLI
         env:
           DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: |
+          mkdir -p ~/.databrickscfg
+          cat > ~/.databrickscfg << EOF
+          [DEFAULT]
+          host = $DATABRICKS_HOST
+          token = $DATABRICKS_TOKEN
+          EOF
+      
+      - name: Deploy to DEV
+        run: |
           cd databricks
           databricks bundle deploy -t dev
-
