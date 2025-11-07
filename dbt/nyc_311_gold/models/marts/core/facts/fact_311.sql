@@ -31,40 +31,77 @@ fact_prep as (
     select
         -- Primary Key
         s.unique_key,
-        
+
         -- Foreign Keys (using surrogate keys from dimensions)
         a.agency_id as agency_key,
         l.location_id as location_key,
         c.complaint_type_key,
-        
+
         -- Denormalized attributes for semantic layer & direct querying
+        cast(date_format(date(s.created_date), 'yyyyMMdd') as int) as created_date_key,
+        cast(date_format(date(s.closed_date), 'yyyyMMdd') as int) as closed_date_key,
+        s.status,
+        s.is_closed,
+        s.has_resolution,
+
+        -- 👇 NEW: Date derived columns for partitioning & clustering
+        s.resolution_description,
+        s.resolution_action_updated_date,
+
+        -- Date Keys (integer for fast joins)
+        s.latitude,
+        s.longitude,
+
+        -- Time Attributes (from silver)
+        s.location_type,
+        s.has_valid_location,
+
+        -- Response Time Measures (using data quality flags)
+        s.incident_zip,
+
+        s.incident_address,
+
+        s.community_board,
+
+        -- Status & Resolution (from silver)
+        s.bbl,
+        s.x_coordinate_state_plane,
+        s.y_coordinate_state_plane,
+        s.closed_date_source,
+        s.has_invalid_closed_date,
+
+        -- Location Details (from silver)
+        s.has_historical_closed_date,
+        s.has_future_closed_date,
+        s.closed_date_original,
+        s.has_valid_zip,
+        s.has_closed_status_without_date,
+        s.open_status_with_closed_date,
+
+        -- Additional Location Context
+        s.open_data_channel_type,
+        s._source_file,
+        s._ingested_at,
+        s._unified_processed_timestamp,
+
+        -- Closed Date Audit (from silver)
         upper(coalesce(s.borough, 'UNSPECIFIED')) as borough,
         upper(coalesce(s.city, 'UNKNOWN')) as city,
         upper(coalesce(s.agency, 'UNKNOWN')) as agency_code,
         upper(coalesce(s.complaint_type, 'UNKNOWN')) as complaint_type,
         upper(coalesce(s.descriptor, 'NO DESCRIPTOR')) as descriptor,
 
-        -- 👇 NEW: Date derived columns for partitioning & clustering
+        -- Data Quality Flags (from silver)
         year(date(s.created_date)) as created_year,
         month(date(s.created_date)) as created_month,
-        
-        -- Date Keys (integer for fast joins)
-        cast(date_format(date(s.created_date), 'yyyyMMdd') as int) as created_date_key,
-        cast(date_format(date(s.closed_date), 'yyyyMMdd') as int) as closed_date_key,
-        
-        -- Time Attributes (from silver)
         hour(s.created_date) as created_hour,
-        case 
-            when hour(s.created_date) between 9 and 17 
-                and dayofweek(s.created_date) between 2 and 6 
-            then true 
-            else false 
-        end as is_business_hours,
-        
-        -- Response Time Measures (using data quality flags)
-        case 
-            when s.is_closed 
-                and s.closed_date is not null 
+
+        -- Source Tracking (from silver)
+        coalesce(hour(s.created_date) between 9 and 17
+                and dayofweek(s.created_date) between 2 and 6, false) as is_business_hours,
+        case
+            when s.is_closed
+                and s.closed_date is not null
                 and not s.has_invalid_closed_date
                 and not s.has_historical_closed_date
                 and not s.has_future_closed_date
@@ -73,12 +110,10 @@ fact_prep as (
                 cast((unix_timestamp(s.closed_date) - unix_timestamp(s.created_date)) as double) / 3600,
                 2
             )
-            else null 
         end as response_time_hours,
-        
-        case 
-            when s.is_closed 
-                and s.closed_date is not null 
+        case
+            when s.is_closed
+                and s.closed_date is not null
                 and not s.has_invalid_closed_date
                 and not s.has_historical_closed_date
                 and not s.has_future_closed_date
@@ -87,10 +122,10 @@ fact_prep as (
                 cast((unix_timestamp(s.closed_date) - unix_timestamp(s.created_date)) as double) / 86400,
                 2
             )
-            else null 
         end as response_time_days,
-        
-        case 
+
+        -- Processing Metadata
+        case
             when not s.is_closed then 'OPEN'
             when s.closed_date is null then 'NO_DATE'
             when s.has_invalid_closed_date or s.has_historical_closed_date or s.has_future_closed_date then 'INVALID_DATE'
@@ -100,78 +135,37 @@ fact_prep as (
             when datediff(s.closed_date, s.created_date) <= 30 then 'WITHIN_MONTH'
             else 'OVER_MONTH'
         end as response_sla_category,
-        
-        -- Status & Resolution (from silver)
-        s.status,
-        s.is_closed,
-        s.has_resolution,
-        s.resolution_description,
-        s.resolution_action_updated_date,
-        
-        -- Location Details (from silver)
-        s.latitude,
-        s.longitude,
-        s.location_type,
-        s.has_valid_location,
-        s.incident_zip,
-        s.incident_address,
-        
-        -- Additional Location Context
-        s.community_board,
-        s.bbl,
-        s.x_coordinate_state_plane,
-        s.y_coordinate_state_plane,
-        
-        -- Closed Date Audit (from silver)
-        s.closed_date_source,
-        s.has_invalid_closed_date,
-        s.has_historical_closed_date,
-        s.has_future_closed_date,
-        s.closed_date_original,
-        
-        -- Data Quality Flags (from silver)
-        s.has_valid_zip,
-        s.has_closed_status_without_date,
-        s.open_status_with_closed_date,
-        
-        -- Source Tracking (from silver)
-        s.open_data_channel_type,
-        s._source_file,
-        s._ingested_at,
-        
-        -- Processing Metadata
-        s._unified_processed_timestamp,
         current_timestamp() as loaded_at
-        
+
     from silver_data s
-    
+
     -- Join with dim_agency (using agency_key = agency code)
     left join {{ ref('dim_agency') }} a
         on upper(trim(s.agency)) = a.agency_key
-    
+
     -- Join with dim_location (borough + zip only)
     left join {{ ref('dim_location') }} l
         on upper(coalesce(s.borough, 'UNSPECIFIED')) = l.borough
         and upper(coalesce(s.incident_zip, 'NO_ZIP')) = l.zip_code
-    
+
     -- Join with dim_complaint_type (using hash key)
     left join {{ ref('dim_complaint_type') }} c
         on sha2(concat(
-            upper(coalesce(s.complaint_type, 'UNSPECIFIED')), 
-            '|', 
+            upper(coalesce(s.complaint_type, 'UNSPECIFIED')),
+            '|',
             upper(coalesce(s.descriptor, 'NO DESCRIPTOR'))
         ), 256) = c.complaint_type_key
 ),
 
 -- Enrich with date attributes
 fact_with_date_attrs as (
-    select 
+    select
         f.*,
         -- Date attributes from dim_date
+        d.fiscal_year as created_fiscal_year,
         coalesce(d.is_weekend, false) as is_created_on_weekend,
         coalesce(d.is_holiday, false) as is_created_on_holiday,
-        coalesce(d.is_business_day, true) as is_created_on_business_day,
-        d.fiscal_year as created_fiscal_year
+        coalesce(d.is_business_day, true) as is_created_on_business_day
     from fact_prep f
     left join {{ ref('dim_date') }} d
         on f.created_date_key = d.date_key
@@ -187,7 +181,7 @@ final as (
         complaint_type_key,
         created_date_key,
         closed_date_key,
-        
+
         -- Denormalized dimensions (for semantic layer without joins)
         borough,
         city,
@@ -198,7 +192,7 @@ final as (
         -- Date Derived Columns (for partition/cluster)
         created_year,
         created_month,
-        
+
         -- Time Attributes
         created_hour,
         is_business_hours,
@@ -206,19 +200,19 @@ final as (
         is_created_on_holiday,
         is_created_on_business_day,
         created_fiscal_year,
-       
+
         -- Measures (aggregatable metrics - only valid ones)
         response_time_hours,
         response_time_days,
         response_sla_category,
-        
+
         -- Status & Resolution
         status,
         is_closed,
         has_resolution,
         resolution_description,
         resolution_action_updated_date,
-        
+
         -- Location Details
         latitude,
         longitude,
@@ -230,30 +224,29 @@ final as (
         bbl,
         x_coordinate_state_plane,
         y_coordinate_state_plane,
-        
+
         -- Closed Date Audit
         closed_date_source,
         has_invalid_closed_date,
         has_historical_closed_date,
         has_future_closed_date,
         closed_date_original,
-        
+
         -- Data Quality Flags
         has_valid_zip,
         has_closed_status_without_date,
         open_status_with_closed_date,
-        
+
         -- Source Tracking
         open_data_channel_type,
         _source_file,
         _ingested_at,
-        
+
         -- Metadata
         _unified_processed_timestamp,
         loaded_at
-        
+
     from fact_with_date_attrs
 )
 
 select * from final
-

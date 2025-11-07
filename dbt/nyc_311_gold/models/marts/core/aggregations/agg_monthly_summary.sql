@@ -10,7 +10,7 @@
 {% if is_incremental() %}
     -- ✅ 3 aylık lookback (son 3 ay + 2 ay için rolling average buffer)
     {% set lookback_months = var('incremental_lookback_months', 3) + 2 %}
-    
+
     {% set min_month_key_query %}
         select max(month_key) - {{ lookback_months }}
         from {{ this }}
@@ -30,34 +30,33 @@ with base_data as (
         d.date_actual,
         f.status,
         f.is_closed,
-        
+
         -- ✅ Response time (only if valid)
-        case 
-            when f.is_closed 
+        f.agency_code,
+
+        -- ✅ SLA category (only valid ones)
+        ct.complaint_category,
+
+        case
+            when f.is_closed
                 and not f.has_invalid_closed_date
                 and not f.has_historical_closed_date
                 and not f.has_future_closed_date
                 and f.response_time_hours is not null
                 and f.response_time_hours >= 0
             then f.response_time_hours
-            else null
         end as valid_response_time_hours,
-        
-        -- ✅ SLA category (only valid ones)
         case
             when f.response_sla_category in ('INVALID_DATE', 'NEGATIVE_TIME', 'NO_DATE') then null
             else f.response_sla_category
-        end as valid_sla_category,
-        
-        f.agency_code,
-        ct.complaint_category
-        
+        end as valid_sla_category
+
     from {{ ref('fact_311') }} f
-    inner join {{ ref('dim_date') }} d 
+    inner join {{ ref('dim_date') }} d
         on f.created_date_key = d.date_key
-    left join {{ ref('dim_complaint_type') }} ct 
+    left join {{ ref('dim_complaint_type') }} ct
         on f.complaint_type_key = ct.complaint_type_key
-    
+
     {% if is_incremental() %}
     -- ✅ Partition pruning için created_year filter (monthly aggregation için yeterli)
     where f.created_year >= year(add_months(current_date(), -{{ lookback_months }}))
@@ -69,7 +68,7 @@ with base_data as (
 -- ============================================
 agency_attrs as (
     select
-        agency_key as agency_key,
+        agency_key,
         agency_name
     from {{ ref('dim_agency') }}
 ),
@@ -81,33 +80,33 @@ monthly_base as (
     select
         year,
         month,
-        max(month_name) as month_name,
         month_key,
+        max(month_name) as month_name,
         min(date_actual) as month_start_date,
         max(date_actual) as month_end_date,
-        
+
         -- Complaint counts
         count(*) as total_complaints,
         sum(case when is_closed then 1 else 0 end) as completed_complaints,
         sum(case when status = 'OPEN' then 1 else 0 end) as open_complaints,
         sum(case when status in ('ASSIGNED', 'STARTED', 'IN PROGRESS') then 1 else 0 end) as in_progress_complaints,
         sum(case when status = 'PENDING' then 1 else 0 end) as pending_complaints,
-        
+
         -- ✅ Response metrics (only VALID data)
         avg(valid_response_time_hours) as avg_response_time_hours,
         percentile_approx(valid_response_time_hours, 0.5) as median_response_time_hours,
         count(valid_response_time_hours) as valid_response_count,
-        
+
         -- ✅ SLA metrics (only VALID data)
         sum(case when valid_sla_category in ('SAME_DAY', 'WITHIN_WEEK') then 1 else 0 end) as within_sla_count,
         count(valid_sla_category) as total_valid_closed_for_sla,
-        
+
         -- ✅ Data quality tracking
         sum(case when is_closed and valid_response_time_hours is null then 1 else 0 end) as closed_without_valid_time,
-        
+
         -- Business days in month
         count(distinct date_actual) as days_in_month
-        
+
     from base_data
     group by year, month, month_key
 ),
@@ -117,10 +116,10 @@ monthly_base as (
 -- ============================================
 previous_month as (
     select
-        month_key + 1 as comparison_month_key,
         total_complaints as total_complaints_prev_month,
         completed_complaints as completed_complaints_prev_month,
-        valid_response_count as valid_response_count_prev_month
+        valid_response_count as valid_response_count_prev_month,
+        month_key + 1 as comparison_month_key
     from monthly_base
 ),
 
@@ -129,8 +128,8 @@ previous_month as (
 -- ============================================
 previous_year as (
     select
-        year + 1 as comparison_year,
         month,
+        year + 1 as comparison_year,
         count(*) as total_complaints_prev_year,
         sum(case when is_closed then 1 else 0 end) as completed_complaints_prev_year,
         count(valid_response_time_hours) as valid_response_count_prev_year
@@ -147,7 +146,7 @@ category_rankings as (
         complaint_category,
         count(*) as category_count,
         row_number() over (
-            partition by month_key 
+            partition by month_key
             order by count(*) desc, complaint_category
         ) as rn
     from base_data
@@ -182,7 +181,7 @@ agency_rankings as (
         agency_code,
         count(*) as agency_count,
         row_number() over (
-            partition by month_key 
+            partition by month_key
             order by count(*) desc, agency_code
         ) as rn
     from base_data
@@ -234,15 +233,15 @@ rolling_metrics as (
     select
         month_key,
         avg(total_complaints) over (
-            order by month_key 
+            order by month_key
             rows between 2 preceding and current row
         ) as complaints_3month_avg,
         avg(completed_complaints) over (
-            order by month_key 
+            order by month_key
             rows between 2 preceding and current row
         ) as completed_3month_avg,
         avg(valid_response_count) over (
-            order by month_key 
+            order by month_key
             rows between 2 preceding and current row
         ) as valid_responses_3month_avg
     from monthly_base
@@ -261,48 +260,75 @@ final as (
         mb.month_start_date,
         mb.month_end_date,
         mb.days_in_month,
-        
+
         -- Volume metrics
         mb.total_complaints,
-        round(mb.total_complaints * 1.0 / mb.days_in_month, 2) as avg_daily_complaints,
         mb.completed_complaints,
         mb.open_complaints,
         mb.in_progress_complaints,
         mb.pending_complaints,
-        coalesce(oe.open_complaints_eom, mb.open_complaints) as open_complaints_eom,
-        
+        mb.valid_response_count,
+        mb.total_valid_closed_for_sla,
+
         -- ✅ Performance metrics (ONLY from valid data)
+        mb.closed_without_valid_time,
+        tc.top_complaint_category_1,
+        tc.top_complaint_category_1_count,
+        tc.top_complaint_category_2,
+        tc.top_complaint_category_2_count,
+        tc.top_complaint_category_3,
+
+        -- ✅ Data quality metrics
+        tc.top_complaint_category_3_count,
+        tc.top_complaint_category_4,
+
+        -- Derived metrics
+        tc.top_complaint_category_4_count,
+        tc.top_complaint_category_5,
+        tc.top_complaint_category_5_count,
+
+        -- MoM comparison
+        ta.top_agency_1_code,
+        aa1.agency_name as top_agency_1_name,
+        ta.top_agency_1_count,
+
+        -- MoM data quality comparison
+        ta.top_agency_2_code,
+        aa2.agency_name as top_agency_2_name,
+
+        -- YoY comparison
+        ta.top_agency_2_count,
+        ta.top_agency_3_code,
+        aa3.agency_name as top_agency_3_name,
+        ta.top_agency_3_count,
+
+        -- YoY data quality comparison
+        round(mb.total_complaints * 1.0 / mb.days_in_month, 2) as avg_daily_complaints,
+        coalesce(oe.open_complaints_eom, mb.open_complaints) as open_complaints_eom,
+
+        -- Rolling averages
         round(mb.avg_response_time_hours, 2) as avg_response_time_hours,
         round(mb.median_response_time_hours, 2) as median_response_time_hours,
-        mb.valid_response_count,
         round(mb.within_sla_count * 100.0 / nullif(mb.total_valid_closed_for_sla, 0), 2) as sla_compliance_rate,
-        mb.total_valid_closed_for_sla,
+
+        -- Top 5 complaint categories
         round(mb.completed_complaints * 100.0 / nullif(mb.total_complaints, 0), 2) as completion_rate,
-        
-        -- ✅ Data quality metrics
-        mb.closed_without_valid_time,
         round(mb.closed_without_valid_time * 100.0 / nullif(mb.completed_complaints, 0), 2) as pct_closed_missing_valid_time,
-        
-        -- Derived metrics
         round(mb.total_complaints * 1.0 / nullif(mb.completed_complaints, 0), 2) as completion_ratio,
         round(mb.open_complaints * 100.0 / nullif(mb.total_complaints, 0), 2) as open_rate,
         round(mb.in_progress_complaints * 100.0 / nullif(mb.total_complaints, 0), 2) as in_progress_rate,
-        
-        -- MoM comparison
         coalesce(pm.total_complaints_prev_month, 0) as total_complaints_prev_month,
-        round((mb.total_complaints - coalesce(pm.total_complaints_prev_month, 0)) * 100.0 / 
-            nullif(pm.total_complaints_prev_month, 0), 2) as mom_growth_rate,
+        round((mb.total_complaints - coalesce(pm.total_complaints_prev_month, 0)) * 100.0
+            / nullif(pm.total_complaints_prev_month, 0), 2) as mom_growth_rate,
         mb.total_complaints - coalesce(pm.total_complaints_prev_month, 0) as mom_growth_absolute,
-        
-        -- MoM data quality comparison
         coalesce(pm.valid_response_count_prev_month, 0) as valid_response_count_prev_month,
-        round((mb.valid_response_count - coalesce(pm.valid_response_count_prev_month, 0)) * 100.0 / 
-            nullif(pm.valid_response_count_prev_month, 0), 2) as mom_valid_data_growth_rate,
-        
-        -- YoY comparison
+        round((mb.valid_response_count - coalesce(pm.valid_response_count_prev_month, 0)) * 100.0
+            / nullif(pm.valid_response_count_prev_month, 0), 2) as mom_valid_data_growth_rate,
+
+        -- Top 3 agencies (code + name from dim_agency)
         coalesce(py.total_complaints_prev_year, 0) as total_complaints_prev_year,
-        round((mb.total_complaints - coalesce(py.total_complaints_prev_year, 0)) * 100.0 / 
-            nullif(py.total_complaints_prev_year, 0), 2) as yoy_growth_rate,
+        round((mb.total_complaints - coalesce(py.total_complaints_prev_year, 0)) * 100.0
+            / nullif(py.total_complaints_prev_year, 0), 2) as yoy_growth_rate,
         mb.total_complaints - coalesce(py.total_complaints_prev_year, 0) as yoy_growth_absolute,
         case
             when py.total_complaints_prev_year is null then 'NO_DATA'
@@ -310,82 +336,54 @@ final as (
             when mb.total_complaints < py.total_complaints_prev_year * 0.9 then 'DECLINE'
             else 'STABLE'
         end as yoy_trend,
-        
-        -- YoY data quality comparison
         coalesce(py.valid_response_count_prev_year, 0) as valid_response_count_prev_year,
-        round((mb.valid_response_count - coalesce(py.valid_response_count_prev_year, 0)) * 100.0 / 
-            nullif(py.valid_response_count_prev_year, 0), 2) as yoy_valid_data_growth_rate,
-        
-        -- Rolling averages
+        round((mb.valid_response_count - coalesce(py.valid_response_count_prev_year, 0)) * 100.0
+            / nullif(py.valid_response_count_prev_year, 0), 2) as yoy_valid_data_growth_rate,
         round(rm.complaints_3month_avg, 2) as complaints_3month_avg,
         round(rm.completed_3month_avg, 2) as completed_3month_avg,
         round(rm.valid_responses_3month_avg, 2) as valid_responses_3month_avg,
-        
-        -- Top 5 complaint categories
-        tc.top_complaint_category_1,
-        tc.top_complaint_category_1_count,
-        tc.top_complaint_category_2,
-        tc.top_complaint_category_2_count,
-        tc.top_complaint_category_3,
-        tc.top_complaint_category_3_count,
-        tc.top_complaint_category_4,
-        tc.top_complaint_category_4_count,
-        tc.top_complaint_category_5,
-        tc.top_complaint_category_5_count,
-        
-        -- Top 3 agencies (code + name from dim_agency)
-        ta.top_agency_1_code,
-        aa1.agency_name as top_agency_1_name,
-        ta.top_agency_1_count,
-        ta.top_agency_2_code,
-        aa2.agency_name as top_agency_2_name,
-        ta.top_agency_2_count,
-        ta.top_agency_3_code,
-        aa3.agency_name as top_agency_3_name,
-        ta.top_agency_3_count,
-        
+
         -- Category concentration (top 3 as % of total)
         round(
-            (coalesce(tc.top_complaint_category_1_count, 0) + 
-             coalesce(tc.top_complaint_category_2_count, 0) + 
-             coalesce(tc.top_complaint_category_3_count, 0)) * 100.0 / 
-            nullif(mb.total_complaints, 0), 2
+            (coalesce(tc.top_complaint_category_1_count, 0)
+             + coalesce(tc.top_complaint_category_2_count, 0)
+             + coalesce(tc.top_complaint_category_3_count, 0)) * 100.0
+            / nullif(mb.total_complaints, 0), 2
         ) as top_3_categories_pct,
-        
+
         -- Agency concentration (top 3 as % of total)
         round(
-            (coalesce(ta.top_agency_1_count, 0) + 
-             coalesce(ta.top_agency_2_count, 0) + 
-             coalesce(ta.top_agency_3_count, 0)) * 100.0 / 
-            nullif(mb.total_complaints, 0), 2
+            (coalesce(ta.top_agency_1_count, 0)
+             + coalesce(ta.top_agency_2_count, 0)
+             + coalesce(ta.top_agency_3_count, 0)) * 100.0
+            / nullif(mb.total_complaints, 0), 2
         ) as top_3_agencies_pct,
-        
+
         -- Metadata
         current_timestamp() as created_at,
         current_timestamp() as updated_at
-        
+
     from monthly_base mb
-    left join previous_month pm 
+    left join previous_month pm
         on mb.month_key = pm.comparison_month_key
-    left join previous_year py 
-        on mb.year = py.comparison_year 
+    left join previous_year py
+        on mb.year = py.comparison_year
         and mb.month = py.month
-    left join open_eom oe 
+    left join open_eom oe
         on mb.month_key = oe.month_key
-    left join top_categories tc 
+    left join top_categories tc
         on mb.month_key = tc.month_key
-    left join top_agencies ta 
+    left join top_agencies ta
         on mb.month_key = ta.month_key
-    left join rolling_metrics rm 
+    left join rolling_metrics rm
         on mb.month_key = rm.month_key
-    left join agency_attrs aa1 
+    left join agency_attrs aa1
         on ta.top_agency_1_code = aa1.agency_key
-    left join agency_attrs aa2 
+    left join agency_attrs aa2
         on ta.top_agency_2_code = aa2.agency_key
-    left join agency_attrs aa3 
+    left join agency_attrs aa3
         on ta.top_agency_3_code = aa3.agency_key
 )
 
 select * from final
 order by month_key desc
-

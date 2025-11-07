@@ -14,6 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ==========================================
+  # PR: VALIDATE BUNDLE
+  # ==========================================
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -36,12 +39,33 @@ jobs:
           token = $DATABRICKS_TOKEN
           EOF
       
-      - name: Validate Bundle
+      - name: Validate Bundle Syntax
         run: |
           cd databricks
           databricks bundle validate
+      
+      - name: Validate DEV Target
+        run: |
+          cd databricks
+          databricks bundle validate -t dev
+          echo "✅ Bundle validation passed for DEV environment"
+      
+      - name: Show Bundle Summary
+        run: |
+          cd databricks
+          echo "=========================================="
+          echo "🔍 BUNDLE SUMMARY FOR DEV"
+          echo "=========================================="
+          databricks bundle validate -t dev --output json || true
+          echo ""
+          echo "✅ Validation completed."
+          echo "ℹ️  Merge this PR to deploy these changes to DEV."
+          echo "=========================================="
 
-  deploy:
+  # ==========================================
+  # POST-MERGE: DEPLOY TO DEV (Automatic)
+  # ==========================================
+  deploy-dev:
     needs: validate
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -69,3 +93,63 @@ jobs:
         run: |
           cd databricks
           databricks bundle deploy -t dev
+          echo "✅ Deployed to DEV environment"
+      
+      - name: Deploy Summary
+        run: |
+          echo "=========================================="
+          echo "🎉 Databricks DEV Deployment Successful!"
+          echo "=========================================="
+          echo "🎯 Target: dev"
+          echo "👤 Deployed by: ${{ github.actor }}"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo ""
+          echo "ℹ️  Production Deployment:"
+          echo "   Option 1: Manual - Run 'databricks bundle deploy -t prod'"
+          echo "   Option 2: Tag-based - Create a release tag"
+          echo "=========================================="
+
+  # ==========================================
+  # TAG-BASED: DEPLOY TO PRODUCTION (Manual Trigger)
+  # Triggered when you create a release tag: v1.0.0, v1.1.0, etc.
+  # ==========================================
+  deploy-prod:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Databricks CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      
+      - name: Configure Databricks CLI
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: |
+          cat > ~/.databrickscfg << EOF
+          [DEFAULT]
+          host = $DATABRICKS_HOST
+          token = $DATABRICKS_TOKEN
+          EOF
+      
+      - name: Deploy to Production
+        run: |
+          cd databricks
+          databricks bundle deploy -t prod
+          echo "✅ Deployed to Production environment"
+      
+      - name: Production Deploy Summary
+        run: |
+          echo "=========================================="
+          echo "🚀 PRODUCTION DEPLOYMENT COMPLETE"
+          echo "=========================================="
+          echo "🎯 Target: prod"
+          echo "🏷️  Tag: ${{ github.ref_name }}"
+          echo "👤 Deployed by: ${{ github.actor }}"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "⏰ Time: $(date)"
+          echo "=========================================="

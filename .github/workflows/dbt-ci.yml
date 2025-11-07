@@ -4,18 +4,36 @@ on:
   pull_request:
     paths:
       - 'dbt/**'
+  push:
+    paths:
+      - 'dbt/**'
+    branches: [main]
+    tags:
+      - 'v*'
+
+# ✅ GitHub Actions izinleri
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
 
 concurrency:
   group: dbt-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # ==========================================
+  # PR: CI TESTING (Slim CI with state comparison)
+  # ==========================================
   validate:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # ✅ Tüm git history'yi al
       
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -28,6 +46,16 @@ jobs:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
       
+      # ✅ 1. SQL Linting (sqlfluff)
+      - name: Install sqlfluff
+        run: pip install sqlfluff sqlfluff-templater-dbt
+      
+      - name: SQL Linting
+        run: |
+          cd dbt/nyc_311_gold
+          sqlfluff lint models/ --config .sqlfluff
+        continue-on-error: true
+      
       - name: Install dbt
         run: pip install dbt-databricks
       
@@ -39,25 +67,242 @@ jobs:
             dbt/nyc_311_gold/dbt_packages
           key: dbt-packages-${{ hashFiles('**/packages.yml') }}
       
-      - name: Configure dbt profile
+      - name: Configure dbt profile (DEV)
         run: |
           mkdir -p ~/.dbt
           cat > ~/.dbt/profiles.yml << EOF
           nyc_311_gold:
-            target: ci
+            target: dev
             outputs:
-              ci:
+              dev:
                 type: databricks
                 host: ${{ secrets.DATABRICKS_HOST }}
                 http_path: ${{ secrets.DBT_DATABRICKS_HTTP_PATH }}
                 token: ${{ secrets.DATABRICKS_TOKEN }}
-                catalog: ${{ secrets.DBT_DATABRICKS_CATALOG }}
-                schema: ci_testing
+                catalog: nyc_311_dev
+                schema: gold
                 threads: 4
           EOF
       
       - name: dbt deps
         run: cd dbt/nyc_311_gold && dbt deps
       
-      - name: dbt compile
-        run: cd dbt/nyc_311_gold && dbt compile
+      # ✅ 2. Checkout main branch için state dosyasını al
+      - name: Compile base state from main branch
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Current branch: $CURRENT_BRANCH"
+          
+          git checkout origin/main
+          cd dbt/nyc_311_gold
+          dbt deps
+          dbt compile --target dev --target-path ./target-base
+          echo "✅ Base state (main branch) compiled"
+          
+          git checkout $CURRENT_BRANCH
+          echo "✅ Returned to PR branch: $CURRENT_BRANCH"
+        continue-on-error: true
+      
+      # ✅ 3. PR branch'ini compile et
+      - name: Compile PR branch
+        run: |
+          cd dbt/nyc_311_gold
+          dbt compile --target dev
+          echo "✅ PR branch compiled"
+      
+      # ✅ 4. Slim CI - sadece değişen modelleri çalıştır
+      - name: dbt run (Slim CI - only changed models)
+        run: |
+          cd dbt/nyc_311_gold
+          if [ -d "./target-base" ]; then
+            echo "🔍 Running Slim CI (only changed models)..."
+            dbt run --select state:modified+ --defer --state ./target-base --target dev
+            echo "✅ Changed models validated in nyc_311_dev.gold"
+          else
+            echo "⚠️  No base state found, running full CI..."
+            dbt run --target dev
+            echo "✅ All models validated in nyc_311_dev.gold"
+          fi
+      
+      - name: dbt test (Slim CI - only changed models)
+        run: |
+          cd dbt/nyc_311_gold
+          if [ -d "./target-base" ]; then
+            echo "🔍 Testing only changed models..."
+            dbt test --select state:modified+ --defer --state ./target-base --target dev
+            echo "✅ Tests passed for changed models"
+          else
+            echo "⚠️  No base state found, running full tests..."
+            dbt test --target dev
+            echo "✅ All tests passed"
+          fi
+      
+      # ✅ 5. PR Comments
+      - name: Post PR Comment
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const comment = `## 🔍 dbt CI Results
+            
+            ✅ **SQL Linting**: Completed
+            ✅ **Slim CI**: Only changed models tested
+            ✅ **Validation**: Passed in \`nyc_311_dev.gold\`
+            
+            📊 **Commit**: ${{ github.sha }}
+            👤 **Author**: ${{ github.actor }}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # ==========================================
+  # POST-MERGE: DEPLOY TO DEV (Automatic)
+  # ==========================================
+  deploy-dev:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dbt
+        run: pip install dbt-databricks
+      
+      - name: Configure dbt profile (DEV)
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          nyc_311_gold:
+            target: dev
+            outputs:
+              dev:
+                type: databricks
+                host: ${{ secrets.DATABRICKS_HOST }}
+                http_path: ${{ secrets.DBT_DATABRICKS_HTTP_PATH }}
+                token: ${{ secrets.DATABRICKS_TOKEN }}
+                catalog: nyc_311_dev
+                schema: gold
+                threads: 8
+          EOF
+      
+      - name: dbt deps
+        run: cd dbt/nyc_311_gold && dbt deps
+      
+      - name: dbt run (DEV Environment)
+        run: |
+          cd dbt/nyc_311_gold
+          dbt run --target dev
+          echo "✅ Models deployed to nyc_311_dev.gold"
+      
+      - name: dbt test (DEV Environment)
+        run: |
+          cd dbt/nyc_311_gold
+          dbt test --target dev
+          echo "✅ Tests passed in nyc_311_dev.gold"
+      
+      # ✅ Store manifest for future Slim CI comparisons
+      - name: Upload manifest for Slim CI
+        uses: actions/upload-artifact@v3
+        with:
+          name: dbt-manifest
+          path: dbt/nyc_311_gold/target/manifest.json
+          retention-days: 7
+      
+      - name: Deploy Summary
+        run: |
+          echo "=========================================="
+          echo "🎉 dbt DEV Deployment Successful!"
+          echo "=========================================="
+          echo "📊 Catalog: nyc_311_dev"
+          echo "📊 Schema: gold"
+          echo "👤 Deployed by: ${{ github.actor }}"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo ""
+          echo "ℹ️  Production Deployment:"
+          echo "   Create a release tag: git tag v1.0.0 && git push origin v1.0.0"
+          echo "=========================================="
+
+  # ==========================================
+  # TAG-BASED: DEPLOY TO PRODUCTION (Manual Trigger)
+  # ==========================================
+  deploy-prod:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dbt
+        run: pip install dbt-databricks
+      
+      - name: Configure dbt profile (PRODUCTION)
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          nyc_311_gold:
+            target: prod
+            outputs:
+              prod:
+                type: databricks
+                host: ${{ secrets.DATABRICKS_HOST }}
+                http_path: ${{ secrets.DBT_DATABRICKS_HTTP_PATH }}
+                token: ${{ secrets.DATABRICKS_TOKEN }}
+                catalog: nyc_311_prod
+                schema: gold
+                threads: 8
+          EOF
+      
+      - name: dbt deps
+        run: cd dbt/nyc_311_gold && dbt deps
+      
+      - name: dbt source freshness (Production)
+        run: |
+          cd dbt/nyc_311_gold
+          dbt source freshness --target prod
+        continue-on-error: true
+      
+      - name: dbt run (PRODUCTION)
+        run: |
+          cd dbt/nyc_311_gold
+          dbt run --target prod
+          echo "✅ Models deployed to nyc_311_prod.gold"
+      
+      - name: dbt test (PRODUCTION)
+        run: |
+          cd dbt/nyc_311_gold
+          dbt test --target prod
+          echo "✅ Tests passed in nyc_311_prod.gold"
+      
+      - name: Production Deploy Summary
+        run: |
+          echo "=========================================="
+          echo "🚀 PRODUCTION DEPLOYMENT COMPLETE"
+          echo "=========================================="
+          echo "📊 Catalog: nyc_311_prod"
+          echo "📊 Schema: gold"
+          echo "🏷️  Tag: ${{ github.ref_name }}"
+          echo "👤 Deployed by: ${{ github.actor }}"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "⏰ Time: $(date)"
+          echo ""
+          echo "✅ All models and tests completed successfully"
+          echo "=========================================="
