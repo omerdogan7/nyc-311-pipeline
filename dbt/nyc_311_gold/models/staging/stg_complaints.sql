@@ -1,1 +1,2 @@
--- Slim CI test
+-- Slim CI test v1.0
+
