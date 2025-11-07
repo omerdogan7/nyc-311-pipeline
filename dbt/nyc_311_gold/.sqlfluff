@@ -1,0 +1,8 @@
+[sqlfluff]
+dialect = databricks
+templater = dbt
+exclude_rules = L003,L011,L016
+max_line_length = 200
+
+[sqlfluff:templater:dbt]
+project_dir = .                    
