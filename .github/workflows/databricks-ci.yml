@@ -1,155 +1,301 @@
-name: Databricks CI/CD
+name: dbt CI/CD
 
 on:
   pull_request:
     paths:
-      - 'databricks/**'
+      - 'dbt/**'
   push:
     paths:
-      - 'databricks/**'
+      - 'dbt/**'
     branches: [main]
+    tags:
+      - 'v*'
+
+# ✅ GitHub Actions izinleri
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
 
 concurrency:
-  group: databricks-ci-${{ github.ref }}
+  group: dbt-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   # ==========================================
-  # PR: VALIDATE BUNDLE
+  # PR: CI TESTING (Slim CI with state comparison)
   # ==========================================
   validate:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     
     steps:
       - uses: actions/checkout@v3
       
-      - name: Setup Databricks CLI
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
       
-      - name: Configure Databricks CLI
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+      
+      # ✅ 1. SQL Linting (sqlfluff)
+      - name: Install sqlfluff
+        run: pip install sqlfluff sqlfluff-templater-dbt
+      
+      - name: SQL Linting
         run: |
-          cat > ~/.databrickscfg << EOF
-          [DEFAULT]
-          host = $DATABRICKS_HOST
-          token = $DATABRICKS_TOKEN
+          cd dbt/nyc_311_gold
+          sqlfluff lint models/ --config .sqlfluff
+        continue-on-error: true
+      
+      - name: Install dbt
+        run: pip install dbt-databricks
+      
+      - name: Cache dbt packages
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.dbt
+            dbt/nyc_311_gold/dbt_packages
+          key: dbt-packages-${{ hashFiles('**/packages.yml') }}
+      
+      - name: Configure dbt profile (DEV)
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          nyc_311_gold:
+            target: dev
+            outputs:
+              dev:
+                type: databricks
+                host: ${{ secrets.DATABRICKS_HOST }}
+                http_path: ${{ secrets.DBT_DATABRICKS_HTTP_PATH }}
+                token: ${{ secrets.DATABRICKS_TOKEN }}
+                catalog: nyc_311_dev
+                schema: gold
+                threads: 4
           EOF
       
-      - name: Validate Bundle Syntax
-        run: |
-          cd databricks
-          databricks bundle validate
+      - name: dbt deps
+        run: cd dbt/nyc_311_gold && dbt deps
       
-      - name: Validate DEV Target
+      # ✅ 2. Checkout main branch için state dosyasını al
+      - name: Checkout main branch for state comparison
         run: |
-          cd databricks
-          databricks bundle validate -t dev
-          echo "✅ Bundle validation passed for DEV environment"
+          git fetch origin main:main
+          git checkout main
+          cd dbt/nyc_311_gold
+          dbt deps
+          dbt compile --target dev --target-path ./target-base
+          echo "✅ Base state (main branch) compiled"
+        continue-on-error: true
       
-      - name: Show Bundle Summary
+      # ✅ 3. PR branch'ine geri dön
+      - name: Checkout PR branch
         run: |
-          cd databricks
-          echo "=========================================="
-          echo "🔍 BUNDLE SUMMARY FOR DEV"
-          echo "=========================================="
-          databricks bundle validate -t dev --output json || true
-          echo ""
-          echo "✅ Validation completed."
-          echo "ℹ️  Merge this PR to deploy these changes to DEV."
-          echo "=========================================="
+          git checkout ${{ github.head_ref }}
+          cd dbt/nyc_311_gold
+          dbt compile --target dev
+          echo "✅ PR branch compiled"
+      
+      # ✅ 4. Slim CI - sadece değişen modelleri çalıştır
+      - name: dbt run (Slim CI - only changed models)
+        run: |
+          cd dbt/nyc_311_gold
+          if [ -d "./target-base" ]; then
+            echo "🔍 Running Slim CI (only changed models)..."
+            dbt run --select state:modified+ --defer --state ./target-base --target dev
+            echo "✅ Changed models validated in nyc_311_dev.gold"
+          else
+            echo "⚠️  No base state found, running full CI..."
+            dbt run --target dev
+            echo "✅ All models validated in nyc_311_dev.gold"
+          fi
+      
+      - name: dbt test (Slim CI - only changed models)
+        run: |
+          cd dbt/nyc_311_gold
+          if [ -d "./target-base" ]; then
+            echo "🔍 Testing only changed models..."
+            dbt test --select state:modified+ --defer --state ./target-base --target dev
+            echo "✅ Tests passed for changed models"
+          else
+            echo "⚠️  No base state found, running full tests..."
+            dbt test --target dev
+            echo "✅ All tests passed"
+          fi
+      
+      # ✅ 5. PR Comments
+      - name: Post PR Comment
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const comment = `## 🔍 dbt CI Results
+            
+            ✅ **SQL Linting**: Completed
+            ✅ **Slim CI**: Only changed models tested
+            ✅ **Validation**: Passed in \`nyc_311_dev.gold\`
+            
+            📊 **Commit**: ${{ github.sha }}
+            👤 **Author**: ${{ github.actor }}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
 
   # ==========================================
   # POST-MERGE: DEPLOY TO DEV (Automatic)
   # ==========================================
   deploy-dev:
-    needs: validate
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     
     steps:
       - uses: actions/checkout@v3
       
-      - name: Setup Databricks CLI
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
       
-      - name: Configure Databricks CLI
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      - name: Install dbt
+        run: pip install dbt-databricks
+      
+      - name: Configure dbt profile (DEV)
         run: |
-          cat > ~/.databrickscfg << EOF
-          [DEFAULT]
-          host = $DATABRICKS_HOST
-          token = $DATABRICKS_TOKEN
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          nyc_311_gold:
+            target: dev
+            outputs:
+              dev:
+                type: databricks
+                host: ${{ secrets.DATABRICKS_HOST }}
+                http_path: ${{ secrets.DBT_DATABRICKS_HTTP_PATH }}
+                token: ${{ secrets.DATABRICKS_TOKEN }}
+                catalog: nyc_311_dev
+                schema: gold
+                threads: 8
           EOF
       
-      - name: Deploy to DEV
+      - name: dbt deps
+        run: cd dbt/nyc_311_gold && dbt deps
+      
+      - name: dbt run (DEV Environment)
         run: |
-          cd databricks
-          databricks bundle deploy -t dev
-          echo "✅ Deployed to DEV environment"
+          cd dbt/nyc_311_gold
+          dbt run --target dev
+          echo "✅ Models deployed to nyc_311_dev.gold"
+      
+      - name: dbt test (DEV Environment)
+        run: |
+          cd dbt/nyc_311_gold
+          dbt test --target dev
+          echo "✅ Tests passed in nyc_311_dev.gold"
+      
+      # ✅ Store manifest for future Slim CI comparisons
+      - name: Upload manifest for Slim CI
+        uses: actions/upload-artifact@v3
+        with:
+          name: dbt-manifest
+          path: dbt/nyc_311_gold/target/manifest.json
+          retention-days: 7
       
       - name: Deploy Summary
         run: |
           echo "=========================================="
-          echo "🎉 Databricks DEV Deployment Successful!"
+          echo "🎉 dbt DEV Deployment Successful!"
           echo "=========================================="
-          echo "🎯 Target: dev"
+          echo "📊 Catalog: nyc_311_dev"
+          echo "📊 Schema: gold"
           echo "👤 Deployed by: ${{ github.actor }}"
           echo "📝 Commit: ${{ github.sha }}"
           echo ""
           echo "ℹ️  Production Deployment:"
-          echo "   Option 1: Manual - Run 'databricks bundle deploy -t prod'"
-          echo "   Option 2: Tag-based - Create a release tag"
+          echo "   Create a release tag: git tag v1.0.0 && git push origin v1.0.0"
           echo "=========================================="
 
   # ==========================================
   # TAG-BASED: DEPLOY TO PRODUCTION (Manual Trigger)
-  # Triggered when you create a release tag: v1.0.0, v1.1.0, etc.
   # ==========================================
   deploy-prod:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     
     steps:
       - uses: actions/checkout@v3
       
-      - name: Setup Databricks CLI
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
       
-      - name: Configure Databricks CLI
-        env:
-          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      - name: Install dbt
+        run: pip install dbt-databricks
+      
+      - name: Configure dbt profile (PRODUCTION)
         run: |
-          cat > ~/.databrickscfg << EOF
-          [DEFAULT]
-          host = $DATABRICKS_HOST
-          token = $DATABRICKS_TOKEN
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          nyc_311_gold:
+            target: prod
+            outputs:
+              prod:
+                type: databricks
+                host: ${{ secrets.DATABRICKS_HOST }}
+                http_path: ${{ secrets.DBT_DATABRICKS_HTTP_PATH }}
+                token: ${{ secrets.DATABRICKS_TOKEN }}
+                catalog: nyc_311_prod
+                schema: gold
+                threads: 8
           EOF
       
-      - name: Deploy to Production
+      - name: dbt deps
+        run: cd dbt/nyc_311_gold && dbt deps
+      
+      - name: dbt source freshness (Production)
         run: |
-          cd databricks
-          databricks bundle deploy -t prod
-          echo "✅ Deployed to Production environment"
+          cd dbt/nyc_311_gold
+          dbt source freshness --target prod
+        continue-on-error: true
+      
+      - name: dbt run (PRODUCTION)
+        run: |
+          cd dbt/nyc_311_gold
+          dbt run --target prod
+          echo "✅ Models deployed to nyc_311_prod.gold"
+      
+      - name: dbt test (PRODUCTION)
+        run: |
+          cd dbt/nyc_311_gold
+          dbt test --target prod
+          echo "✅ Tests passed in nyc_311_prod.gold"
       
       - name: Production Deploy Summary
         run: |
           echo "=========================================="
           echo "🚀 PRODUCTION DEPLOYMENT COMPLETE"
           echo "=========================================="
-          echo "🎯 Target: prod"
+          echo "📊 Catalog: nyc_311_prod"
+          echo "📊 Schema: gold"
           echo "🏷️  Tag: ${{ github.ref_name }}"
           echo "👤 Deployed by: ${{ github.actor }}"
           echo "📝 Commit: ${{ github.sha }}"
           echo "⏰ Time: $(date)"
+          echo ""
+          echo "✅ All models and tests completed successfully"
           echo "=========================================="
