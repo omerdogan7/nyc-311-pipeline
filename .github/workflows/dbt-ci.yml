@@ -11,7 +11,6 @@ on:
     tags:
       - 'v*'
 
-# ✅ GitHub Actions izinleri
 permissions:
   contents: read
   pull-requests: write
@@ -22,9 +21,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ==========================================
-  # PR: CI TESTING (Slim CI with state comparison)
-  # ==========================================
   validate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -33,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # ✅ Tüm git history'yi al
+          fetch-depth: 0
       
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -46,7 +42,6 @@ jobs:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
       
-      # ✅ 1. SQL Linting (sqlfluff)
       - name: Install sqlfluff
         run: pip install sqlfluff sqlfluff-templater-dbt
       
@@ -87,58 +82,72 @@ jobs:
       - name: dbt deps
         run: cd dbt/nyc_311_gold && dbt deps
       
-      # ✅ 2. Checkout main branch için state dosyasını al
-      - name: Compile base state from main branch
+      # ✅ FIX: Download production manifest from artifacts
+      - name: Download production manifest
+        id: download-manifest
+        uses: dawidd6/action-download-artifact@v2
+        continue-on-error: true
+        with:
+          workflow: dbt-ci-cd.yml
+          workflow_conclusion: success
+          name: dbt-manifest
+          path: dbt/nyc_311_gold/target-prod
+          branch: main
+      
+      # ✅ FIX: Compile main branch as fallback
+      - name: Compile base state (main branch)
+        if: steps.download-manifest.outcome == 'failure'
         run: |
+          echo "⚠️ No production manifest found, compiling main branch..."
           git fetch origin main:refs/remotes/origin/main
-          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          echo "Current branch: $CURRENT_BRANCH"
-          
           git checkout origin/main
           cd dbt/nyc_311_gold
           dbt deps
-          dbt compile --target dev --target-path ./target-base
-          echo "✅ Base state (main branch) compiled"
-          
-          git checkout $CURRENT_BRANCH
-          echo "✅ Returned to PR branch: $CURRENT_BRANCH"
-        continue-on-error: true
+          dbt compile --target dev --target-path ./target-prod
+          echo "✅ Base state compiled from main"
+          git checkout -
       
-      # ✅ 3. PR branch'ini compile et
-      - name: Compile PR branch
+      # ✅ FIX: Verify manifest exists
+      - name: Check manifest
         run: |
           cd dbt/nyc_311_gold
-          dbt compile --target dev
-          echo "✅ PR branch compiled"
+          if [ -f "target-prod/manifest.json" ]; then
+            echo "✅ Production manifest found for Slim CI"
+            ls -lh target-prod/manifest.json
+          else
+            echo "❌ No manifest found - will run full build"
+            mkdir -p target-prod
+          fi
       
-      # ✅ 4. Slim CI - sadece değişen modelleri çalıştır
-      - name: dbt run (Slim CI - only changed models)
+      # ✅ FIX: Slim CI with proper state comparison
+      - name: dbt run (Slim CI)
         run: |
           cd dbt/nyc_311_gold
-          if [ -d "./target-base" ]; then
+          if [ -f "target-prod/manifest.json" ]; then
             echo "🔍 Running Slim CI (only changed models)..."
-            dbt run --select state:modified+ --defer --state ./target-base --target dev
-            echo "✅ Changed models validated in nyc_311_dev.gold"
+            dbt run --select state:modified+ --defer --state ./target-prod --target dev || {
+              echo "⚠️ No models changed, running full build as fallback"
+              dbt run --target dev
+            }
           else
-            echo "⚠️  No base state found, running full CI..."
+            echo "⚠️ No base state, running full build"
             dbt run --target dev
-            echo "✅ All models validated in nyc_311_dev.gold"
           fi
       
-      - name: dbt test (Slim CI - only changed models)
+      - name: dbt test (Slim CI)
         run: |
           cd dbt/nyc_311_gold
-          if [ -d "./target-base" ]; then
+          if [ -f "target-prod/manifest.json" ]; then
             echo "🔍 Testing only changed models..."
-            dbt test --select state:modified+ --defer --state ./target-base --target dev
-            echo "✅ Tests passed for changed models"
+            dbt test --select state:modified+ --defer --state ./target-prod --target dev || {
+              echo "⚠️ No tests to run, running full tests as fallback"
+              dbt test --target dev
+            }
           else
-            echo "⚠️  No base state found, running full tests..."
+            echo "⚠️ No base state, running full tests"
             dbt test --target dev
-            echo "✅ All tests passed"
           fi
       
-      # ✅ 5. PR Comments
       - name: Post PR Comment
         if: always()
         uses: actions/github-script@v6
@@ -162,9 +171,6 @@ jobs:
               body: comment
             });
 
-  # ==========================================
-  # POST-MERGE: DEPLOY TO DEV (Automatic)
-  # ==========================================
   deploy-dev:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -213,13 +219,13 @@ jobs:
           dbt test --target dev
           echo "✅ Tests passed in nyc_311_dev.gold"
       
-      # ✅ Store manifest for future Slim CI comparisons
-      - name: Upload manifest for Slim CI
+      # ✅ CRITICAL: Upload manifest for future Slim CI
+      - name: Upload manifest artifact
         uses: actions/upload-artifact@v3
         with:
           name: dbt-manifest
           path: dbt/nyc_311_gold/target/manifest.json
-          retention-days: 7
+          retention-days: 30
       
       - name: Deploy Summary
         run: |
@@ -231,13 +237,9 @@ jobs:
           echo "👤 Deployed by: ${{ github.actor }}"
           echo "📝 Commit: ${{ github.sha }}"
           echo ""
-          echo "ℹ️  Production Deployment:"
-          echo "   Create a release tag: git tag v1.0.0 && git push origin v1.0.0"
+          echo "✅ Manifest uploaded for Slim CI"
           echo "=========================================="
 
-  # ==========================================
-  # TAG-BASED: DEPLOY TO PRODUCTION (Manual Trigger)
-  # ==========================================
   deploy-prod:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -303,6 +305,4 @@ jobs:
           echo "👤 Deployed by: ${{ github.actor }}"
           echo "📝 Commit: ${{ github.sha }}"
           echo "⏰ Time: $(date)"
-          echo ""
-          echo "✅ All models and tests completed successfully"
           echo "=========================================="

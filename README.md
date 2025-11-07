@@ -52,10 +52,6 @@ NYC 311 API → Airflow → AWS S3 → Databricks Bronze → Databricks Silver �
 
 ![Tech Stack Animation](assets/tech_stack.gif)
 
-## Data Flow
-
-![Data Flow](assets/data_flow.png)
-
 ## Project Structure
 
 ```
@@ -114,6 +110,9 @@ nyc_311_project/
 │
 └── README.md
 ```
+## Data Flow
+
+![Data Flow](assets/data_flow.png)
 
 ## Quick Start
 
