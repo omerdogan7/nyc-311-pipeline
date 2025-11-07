@@ -7,18 +7,17 @@
 }}
 
 with distinct_agencies as (
-    select distinct
-        agency
+    select distinct agency
     from {{ source('silver_311', 'silver_311') }}
     where agency is not null
 ),
 
 final as (
-    select 
+    select
         row_number() over (order by upper(trim(agency))) as agency_id,
         upper(trim(agency)) as agency_key,
-        
-        case 
+
+        case
             when upper(agency) = '3-1-1' then '311 Customer Service Center'
             when upper(agency) = 'DCWP' then 'Department of Consumer and Worker Protection'
             when upper(agency) = 'DEP' then 'Department of Environmental Protection'
@@ -40,8 +39,8 @@ final as (
             when upper(agency) = 'OTHER' then 'Other Agencies'
             else upper(agency)
         end as agency_name,
-        
-        case 
+
+        case
             when upper(agency) in ('NYPD', 'DOB') then 'Public Safety'
             when upper(agency) in ('DSNY', 'DOT', 'DPR') then 'City Services'
             when upper(agency) = 'DEP' then 'Environment & Utilities'
@@ -53,9 +52,9 @@ final as (
             when upper(agency) = 'HPD' then 'Housing'
             else 'Other'
         end as agency_category,
-        
+
         current_timestamp() as created_at
-        
+
     from distinct_agencies
 )
 

@@ -240,22 +240,14 @@ categorized as (
         end as complaint_category,
 
         -- 🚩 Data Quality Flag
-        case
-            when upper(complaint_type) like '%SELECT%FROM%'
+        coalesce(upper(complaint_type) like '%SELECT%FROM%'
                 or upper(complaint_type) like '%WINDOWS%WIN.INI%'
                 or upper(complaint_type) like '%WEB-INF%'
-                or upper(complaint_type) like '%NSLOOKUP%'
-                then true
-            else false
-        end as is_malicious_data,
+                or upper(complaint_type) like '%NSLOOKUP%', false) as is_malicious_data,
 
         -- 🧪 Test Data Flag
-        case
-            when upper(complaint_type) in ('DSNY INTERNAL', 'ZTESTINT', 'ZSYSTEST', 'NONCONST')
-                or upper(complaint_type) like '%TEST%'
-                then true
-            else false
-        end as is_test_data,
+        coalesce(upper(complaint_type) in ('DSNY INTERNAL', 'ZTESTINT', 'ZSYSTEST', 'NONCONST')
+                or upper(complaint_type) like '%TEST%', false) as is_test_data,
 
         current_timestamp() as created_at
 

@@ -10,7 +10,7 @@
 {% if is_incremental() %}
     -- Extended lookback for rolling averages (7 days + 7 days window)
     {% set lookback_days = var('incremental_lookback_days', 7) + 7 %}
-    
+
     {% set min_date_key_query %}
         select cast(
             date_format(
@@ -33,34 +33,33 @@ with base_data as (
         f.location_key,
         f.status,
         f.is_closed,
-        
+
         -- Response time (only if valid)
-        case 
-            when f.is_closed 
+        f.borough,
+
+        -- SLA category (only valid ones)
+        f.city,
+
+        f.complaint_type,
+        d.date_actual,
+        case
+            when f.is_closed
                 and not f.has_invalid_closed_date
                 and not f.has_historical_closed_date
                 and not f.has_future_closed_date
                 and f.response_time_hours is not null
                 and f.response_time_hours >= 0
             then f.response_time_hours
-            else null
         end as valid_response_time_hours,
-        
-        -- SLA category (only valid ones)
         case
             when f.response_sla_category in ('INVALID_DATE', 'NEGATIVE_TIME', 'NO_DATE') then null
             else f.response_sla_category
-        end as valid_sla_category,
-        
-        f.borough,
-        f.city,
-        f.complaint_type,
-        d.date_actual
-        
+        end as valid_sla_category
+
     from {{ ref('fact_311') }} f
-    inner join {{ ref('dim_date') }} d 
+    inner join {{ ref('dim_date') }} d
         on f.created_date_key = d.date_key
-    
+
     {% if is_incremental() %}
     -- Use created_date_key for partition pruning
     where f.created_date_key >= {{ min_date_key }}
@@ -87,25 +86,25 @@ location_daily as (
         max(borough) as borough,
         max(city) as city,
         max(date_actual) as date_actual,
-        
+
         -- Complaint counts
         count(*) as total_complaints,
         sum(case when status = 'OPEN' then 1 else 0 end) as open_complaints,
         sum(case when is_closed then 1 else 0 end) as closed_complaints,
         count(*) as new_complaints,
-        
+
         -- Response metrics (only VALID data)
         avg(valid_response_time_hours) as avg_response_time_hours,
         percentile_approx(valid_response_time_hours, 0.5) as median_response_time_hours,
         count(valid_response_time_hours) as valid_response_count,
-        
+
         -- SLA metrics (only VALID data)
         sum(case when valid_sla_category in ('SAME_DAY', 'WITHIN_WEEK') then 1 else 0 end) as within_sla_count,
         count(valid_sla_category) as total_valid_closed_for_sla,
-        
+
         -- Data quality tracking
         sum(case when is_closed and valid_response_time_hours is null then 1 else 0 end) as closed_without_valid_time
-        
+
     from base_data
     group by date_key, location_key
 ),
@@ -120,7 +119,7 @@ complaint_type_rankings as (
         complaint_type,
         count(*) as complaint_count,
         row_number() over (
-            partition by date_key, location_key 
+            partition by date_key, location_key
             order by count(*) desc, complaint_type
         ) as rn
     from base_data
@@ -151,16 +150,16 @@ rolling_avg as (
         date_key,
         location_key,
         avg(total_complaints) over (
-            partition by location_key 
-            order by date_key 
+            partition by location_key
+            order by date_key
             rows between 6 preceding and current row
         ) as complaints_7day_avg,
         lag(total_complaints, 7) over (
-            partition by location_key 
+            partition by location_key
             order by date_key
         ) as prev_week_complaints,
         lag(total_complaints, 1) over (
-            partition by location_key 
+            partition by location_key
             order by date_key
         ) as prev_day_complaints
     from location_daily
@@ -191,15 +190,15 @@ location_rankings as (
         city,
         total_complaints,
         row_number() over (
-            partition by date_key, borough 
+            partition by date_key, borough
             order by total_complaints desc
         ) as borough_rank_daily,
         row_number() over (
-            partition by date_key, borough, city 
+            partition by date_key, borough, city
             order by total_complaints desc
         ) as city_rank_in_borough,
         row_number() over (
-            partition by date_key 
+            partition by date_key
             order by total_complaints desc
         ) as citywide_rank
     from location_daily
@@ -216,47 +215,52 @@ final as (
         ld.borough,
         ld.city,
         la.zip_code,
-        
+
         -- Volume metrics
         ld.total_complaints,
         ld.open_complaints,
         ld.closed_complaints,
         ld.new_complaints,
-        
+
         -- Performance metrics (ONLY from valid data)
-        round(ld.avg_response_time_hours, 2) as avg_response_time_hours,
-        round(ld.median_response_time_hours, 2) as median_response_time_hours,
         ld.valid_response_count,
-        round(ld.within_sla_count * 100.0 / nullif(ld.total_valid_closed_for_sla, 0), 2) as sla_compliance_rate,
         ld.total_valid_closed_for_sla,
-        round(ld.closed_complaints * 100.0 / nullif(ld.total_complaints, 0), 2) as completion_rate,
-        
-        -- Data quality metrics
         ld.closed_without_valid_time,
-        round(ld.closed_without_valid_time * 100.0 / nullif(ld.closed_complaints, 0), 2) as pct_closed_missing_valid_time,
-        
-        -- Top 3 complaint types
         tc.top_complaint_type_1,
         tc.top_complaint_type_1_count,
         tc.top_complaint_type_2,
+
+        -- Data quality metrics
         tc.top_complaint_type_2_count,
         tc.top_complaint_type_3,
+
+        -- Top 3 complaint types
         tc.top_complaint_type_3_count,
-        
+        lr.borough_rank_daily,
+        lr.city_rank_in_borough,
+        lr.citywide_rank,
+        ba.locations_in_borough,
+        round(ld.avg_response_time_hours, 2) as avg_response_time_hours,
+
         -- Trend metrics
-        round(ra.complaints_7day_avg, 2) as complaints_7day_avg,
-        round((ld.total_complaints - coalesce(ra.prev_week_complaints, 0)) * 100.0 / 
-            nullif(ra.prev_week_complaints, 0), 2) as complaints_vs_prev_week_pct,
-        round((ld.total_complaints - coalesce(ra.prev_day_complaints, 0)) * 100.0 / 
-            nullif(ra.prev_day_complaints, 0), 2) as complaints_vs_prev_day_pct,
-        
+        round(ld.median_response_time_hours, 2) as median_response_time_hours,
+        round(ld.within_sla_count * 100.0 / nullif(ld.total_valid_closed_for_sla, 0), 2) as sla_compliance_rate,
+        round(ld.closed_complaints * 100.0 / nullif(ld.total_complaints, 0), 2) as completion_rate,
+
         -- Hotspot detection (1.5x borough average)
-        case 
-            when ld.total_complaints > ba.borough_daily_avg * 1.5 then true 
-            else false 
-        end as is_hotspot,
-        
+        round(ld.closed_without_valid_time * 100.0 / nullif(ld.closed_complaints, 0), 2) as pct_closed_missing_valid_time,
+
         -- Hotspot severity (2x = high, 1.5-2x = medium)
+        round(ra.complaints_7day_avg, 2) as complaints_7day_avg,
+
+        -- Rankings
+        round((ld.total_complaints - coalesce(ra.prev_week_complaints, 0)) * 100.0
+            / nullif(ra.prev_week_complaints, 0), 2) as complaints_vs_prev_week_pct,
+        round((ld.total_complaints - coalesce(ra.prev_day_complaints, 0)) * 100.0
+            / nullif(ra.prev_day_complaints, 0), 2) as complaints_vs_prev_day_pct,
+        coalesce(ld.total_complaints > ba.borough_daily_avg * 1.5, false) as is_hotspot,
+
+        -- Context metrics
         case
             when ba.borough_daily_avg is null then 'NO_DATA'
             when ld.total_complaints > ba.borough_daily_avg * 2.0 then 'HIGH'
@@ -264,18 +268,10 @@ final as (
             when ld.total_complaints > ba.borough_daily_avg * 1.2 then 'LOW'
             else 'NORMAL'
         end as hotspot_severity,
-        
-        -- Rankings
-        lr.borough_rank_daily,
-        lr.city_rank_in_borough,
-        lr.citywide_rank,
-        
-        -- Context metrics
         round(ba.borough_daily_avg, 2) as borough_avg_complaints,
         round(ld.total_complaints * 100.0 / nullif(ba.borough_daily_avg, 0), 2) as pct_of_borough_avg,
         round(ld.total_complaints * 100.0 / nullif(ba.total_borough_complaints, 0), 2) as pct_of_borough_total,
-        ba.locations_in_borough,
-        
+
         -- Trend indicators
         case
             when ra.prev_week_complaints is null then 'NO_DATA'
@@ -283,7 +279,7 @@ final as (
             when ld.total_complaints < ra.prev_week_complaints * 0.8 then 'DECREASING'
             else 'STABLE'
         end as trend_direction,
-        
+
         -- Volatility indicator
         case
             when ra.complaints_7day_avg is null then 'NO_DATA'
@@ -291,28 +287,27 @@ final as (
             when abs(ld.total_complaints - ra.complaints_7day_avg) > ra.complaints_7day_avg * 0.15 then 'MEDIUM_VARIANCE'
             else 'LOW_VARIANCE'
         end as volatility,
-        
+
         -- Metadata
         current_timestamp() as created_at,
         current_timestamp() as updated_at
-        
+
     from location_daily ld
-    left join location_attrs la 
+    left join location_attrs la
         on ld.location_key = la.location_key
-    left join rolling_avg ra 
-        on ld.date_key = ra.date_key 
+    left join rolling_avg ra
+        on ld.date_key = ra.date_key
         and ld.location_key = ra.location_key
-    left join borough_avg ba 
-        on ld.date_key = ba.date_key 
+    left join borough_avg ba
+        on ld.date_key = ba.date_key
         and ld.borough = ba.borough
-    left join location_rankings lr 
-        on ld.date_key = lr.date_key 
+    left join location_rankings lr
+        on ld.date_key = lr.date_key
         and ld.location_key = lr.location_key
-    left join top_complaints tc 
-        on ld.date_key = tc.date_key 
+    left join top_complaints tc
+        on ld.date_key = tc.date_key
         and ld.location_key = tc.location_key
 )
 
 select * from final
 order by date_key desc, total_complaints desc
-
