@@ -14,7 +14,7 @@ cleaned as (
         unique_key,
         created_date,
         closed_date,
-        complaint_type     
+        agency   
     from source
     where created_date is not null
 )
