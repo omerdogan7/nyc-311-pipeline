@@ -11,21 +11,29 @@ on:
     tags:
       - 'v*'
 
+# ✅ GitHub Actions izinleri
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 concurrency:
   group: dbt-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   # ==========================================
-  # PR: CI TESTING (Uses DEV catalog)
+  # PR: CI TESTING (Slim CI with state comparison)
   # ==========================================
   validate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # ✅ Tüm git history'yi al
       
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -79,27 +87,63 @@ jobs:
       - name: dbt deps
         run: cd dbt/nyc_311_gold && dbt deps
       
-      - name: dbt compile
-        run: cd dbt/nyc_311_gold && dbt compile
+      # ✅ 2. Checkout main branch için state dosyasını al
+      - name: Compile base state from main branch
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Current branch: $CURRENT_BRANCH"
+          
+          git checkout origin/main
+          cd dbt/nyc_311_gold
+          dbt deps
+          dbt compile --target dev --target-path ./target-base
+          echo "✅ Base state (main branch) compiled"
+          
+          git checkout $CURRENT_BRANCH
+          echo "✅ Returned to PR branch: $CURRENT_BRANCH"
+        continue-on-error: true
       
-      # ✅ 2. Slim CI (sadece değişen modelleri test et)
+      # ✅ 3. PR branch'ini compile et
+      - name: Compile PR branch
+        run: |
+          cd dbt/nyc_311_gold
+          dbt compile --target dev
+          echo "✅ PR branch compiled"
+      
+      # ✅ 4. Slim CI - sadece değişen modelleri çalıştır
       - name: dbt run (Slim CI - only changed models)
         run: |
           cd dbt/nyc_311_gold
-          dbt run --select state:modified+ --target dev
-          echo "✅ Only changed models validated in nyc_311_dev.gold"
+          if [ -d "./target-base" ]; then
+            echo "🔍 Running Slim CI (only changed models)..."
+            dbt run --select state:modified+ --defer --state ./target-base --target dev
+            echo "✅ Changed models validated in nyc_311_dev.gold"
+          else
+            echo "⚠️  No base state found, running full CI..."
+            dbt run --target dev
+            echo "✅ All models validated in nyc_311_dev.gold"
+          fi
       
       - name: dbt test (Slim CI - only changed models)
         run: |
           cd dbt/nyc_311_gold
-          dbt test --select state:modified+ --target dev
-          echo "✅ Tests passed for changed models"
+          if [ -d "./target-base" ]; then
+            echo "🔍 Testing only changed models..."
+            dbt test --select state:modified+ --defer --state ./target-base --target dev
+            echo "✅ Tests passed for changed models"
+          else
+            echo "⚠️  No base state found, running full tests..."
+            dbt test --target dev
+            echo "✅ All tests passed"
+          fi
       
-      # ✅ 3. PR Comments (sonuçları PR'a yorum olarak ekle)
+      # ✅ 5. PR Comments
       - name: Post PR Comment
         if: always()
         uses: actions/github-script@v6
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const comment = `## 🔍 dbt CI Results
             
@@ -168,6 +212,14 @@ jobs:
           cd dbt/nyc_311_gold
           dbt test --target dev
           echo "✅ Tests passed in nyc_311_dev.gold"
+      
+      # ✅ Store manifest for future Slim CI comparisons
+      - name: Upload manifest for Slim CI
+        uses: actions/upload-artifact@v3
+        with:
+          name: dbt-manifest
+          path: dbt/nyc_311_gold/target/manifest.json
+          retention-days: 7
       
       - name: Deploy Summary
         run: |
