@@ -45,7 +45,7 @@ df = df.sort_values('ds').reset_index(drop=True)
 
 print(f"✅ Loaded {len(df)} days of data")
 print(f"   Date range: {df['ds'].min().date()} to {df['ds'].max().date()}")
-print(f"✅ Fixed workload_pressure_ratio (7-day avg with lag)")
+
 
 # COMMAND ----------
 
@@ -72,9 +72,9 @@ print(f"✅ Test:  {len(test)} days ({test['ds'].min().date()} to {test['ds'].ma
 # Define regressors
 # FINAL FEATURE SET
 REGRESSORS = [
-    'is_holiday',           # -873 tickets on holidays
-    'rolling_7day_avg',     # Recent trend
-    'lag_7day',            # Weekly pattern
+    'is_holiday',           
+    'rolling_7day_avg',     
+    'lag_7day',            
 ]
 print(f"\n🧹 Filtering training data...")
 
@@ -372,11 +372,6 @@ print("QUICK SUMMARY")
 print("=" * 50)
 print(f"\n✅ Most important: {impact_df.iloc[0]['feature']}")
 print(f"   Impact: {impact_df.iloc[0]['impact']:+.0f} tickets\n")
-
-print("📌 Key Findings:")
-print("  • Workload pressure increases tickets most")
-print("  • Holidays and weekends reduce tickets")
-print("  • COVID effects still visible but smaller")
 
 # COMMAND ----------
 # ═══════════════════════════════════════════════════════════════

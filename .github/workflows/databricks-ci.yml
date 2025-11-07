@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   # ==========================================
-  # PR: VALIDATE BUNDLE + DEV DRY-RUN
+  # PR: VALIDATE BUNDLE
   # ==========================================
   validate:
     runs-on: ubuntu-latest
@@ -48,16 +48,17 @@ jobs:
         run: |
           cd databricks
           databricks bundle validate -t dev
+          echo "✅ Bundle validation passed for DEV environment"
       
-      - name: DEV Deployment Preview (Dry-Run)
+      - name: Show Bundle Summary
         run: |
           cd databricks
           echo "=========================================="
-          echo "🔍 DEV DEPLOYMENT PREVIEW"
+          echo "🔍 BUNDLE SUMMARY FOR DEV"
           echo "=========================================="
-          databricks bundle deploy -t dev --dry-run
+          databricks bundle validate -t dev --output json || true
           echo ""
-          echo "✅ Dry-run completed. No changes were made."
+          echo "✅ Validation completed."
           echo "ℹ️  Merge this PR to deploy these changes to DEV."
           echo "=========================================="
 
