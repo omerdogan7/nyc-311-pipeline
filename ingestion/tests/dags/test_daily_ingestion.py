@@ -269,16 +269,16 @@ def test_dag_schedule(dagbag):
 
 
 def test_dag_start_date(dagbag):
-    """🔥 Is start date October 1, 2025?"""
+    """🔥 Is start date November 8, 2025?"""
     dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
     # Compare dates only (ignore timezone differences)
-    assert dag.start_date.date() == datetime(2025, 10, 1).date()
+    assert dag.start_date.date() == datetime(2025, 11, 8).date()
 
 
-def test_dag_catchup_enabled(dagbag):
-    """🔥 Is catchup enabled? (for backfilling past days)"""
+def test_dag_catchup_disabled(dagbag):
+    """🔥 Is catchup disabled? (for T-2 pattern with manual backfill)"""
     dag = dagbag.get_dag(dag_id="nyc311_daily_ingestion")
-    assert dag.catchup is True
+    assert dag.catchup is False
 
 
 def test_task_dependencies(dagbag):
